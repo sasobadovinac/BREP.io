@@ -9,6 +9,13 @@ import {
     test_boolean_operation_target_name_preserved,
 } from './test_boolean_operation_target_name.js';
 import { test_boolean_face_metadata_preserved } from './test_boolean_face_metadata_preserved.js';
+import {
+    test_boolean_overlap_conditioning_subtract_expands_tool_entry_cap_outward,
+    test_boolean_overlap_conditioning_subtract_can_be_disabled,
+    test_boolean_overlap_conditioning_subtract_enabled_by_default,
+    test_boolean_overlap_conditioning_union_can_be_disabled,
+    test_boolean_overlap_conditioning_union_enabled_by_default,
+} from './test_boolean_overlap_conditioning.js';
 import { test_Chamfer } from './test_chamfer.js';
 import {
     test_edge_smooth_constraints_prevent_triangle_foldback,
@@ -370,6 +377,11 @@ export const testFunctions = [
     { test: test_solid_overlap_diagnostics_detects_coplanar_overlap, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     { test: test_solid_overlap_diagnostics_ignores_boundary_touching_faces, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     { test: test_solid_overlap_diagnostics_detects_cross_solid_overlap, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_boolean_overlap_conditioning_union_enabled_by_default, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_boolean_overlap_conditioning_union_can_be_disabled, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_boolean_overlap_conditioning_subtract_enabled_by_default, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_boolean_overlap_conditioning_subtract_expands_tool_entry_cap_outward, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_boolean_overlap_conditioning_subtract_can_be_disabled, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     { test: test_visibility_hidden_state_persistence, afterRun: afterRun_visibility_hidden_state_persistence, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     { test: test_textToFace, afterRun: afterRun_textToFace, printArtifacts: false, exportFaces: true, exportSolids: false, resetHistory: true },
     { test: test_sheetMetal_nonManifold_sm_f18, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },

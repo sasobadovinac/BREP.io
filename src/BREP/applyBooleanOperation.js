@@ -7,6 +7,10 @@ import { Solid } from "./BetterSolid.js";
 import { MeshRepairer } from "./MeshRepairer.js";
 import { Manifold, ManifoldMesh } from "./SolidShared.js";
 import { computeBoundsFromVertices } from "./boundsUtils.js";
+import {
+  buildBooleanOverlapConditioningPlan,
+  SOLID_OVERLAP_DIAGNOSTIC_DEFAULTS,
+} from './solidOverlapDiagnosticsCore.js';
 
 const BOOLEAN_TINY_FACE_MAX_AREA = 0.001;
 
@@ -152,6 +156,152 @@ function __booleanCopyFaceMetadataByName(targetSolid, ...sourceSolids) {
       } catch { /* ignore metadata carry-over failures */ }
     }
   }
+}
+
+function __booleanApproxScale(solid) {
+  try {
+    const vp = solid && solid._vertProperties;
+    if (!Array.isArray(vp) || vp.length < 3) return 1;
+    let minX = +Infinity, minY = +Infinity, minZ = +Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    for (let i = 0; i < vp.length; i += 3) {
+      const x = vp[i], y = vp[i + 1], z = vp[i + 2];
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+      if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+    }
+    const dx = maxX - minX, dy = maxY - minY, dz = maxZ - minZ;
+    const diag = Math.hypot(dx, dy, dz);
+    return (diag > 0) ? diag : Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz), 1);
+  } catch {
+    return 1;
+  }
+}
+
+function __booleanResolveConditioningOptions(scaleHint = 1) {
+  const scale = Math.max(1, Number(scaleHint) || 1);
+  return {
+    ...SOLID_OVERLAP_DIAGNOSTIC_DEFAULTS,
+    planeDistanceTolerance: Math.max(
+      SOLID_OVERLAP_DIAGNOSTIC_DEFAULTS.planeDistanceTolerance,
+      1e-6 * scale,
+    ),
+    scaleHint: scale,
+  };
+}
+
+function __booleanApplyFaceAdjustments(solid, faceAdjustments, debugLog, logContext = null) {
+  if (!solid || typeof solid.pushFace !== 'function' || !Array.isArray(faceAdjustments) || faceAdjustments.length === 0) {
+    return [];
+  }
+  const applied = [];
+  for (const adjustment of faceAdjustments) {
+    const faceName = String(adjustment?.faceName || '').trim();
+    const distance = Number(adjustment?.distance);
+    if (!faceName || !Number.isFinite(distance) || distance === 0) continue;
+    try {
+      solid.pushFace(faceName, distance, { warnMissing: false, warnInvalidNormal: false });
+      applied.push({
+        faceName,
+        distance,
+        sign: adjustment?.sign || Math.sign(distance) || 0,
+        overlapCount: adjustment?.overlapCount || 0,
+        overlapArea: adjustment?.overlapArea || 0,
+      });
+    } catch (err) {
+      debugLog?.('Failed to condition boolean face overlap', {
+        context: logContext,
+        faceName,
+        distance,
+        message: err?.message || err,
+      });
+    }
+  }
+  return applied;
+}
+
+function __booleanConditionOperands(op, stationarySolid, movingSolid, debugLog, context = null) {
+  const normalizedOp = String(op || '').toUpperCase();
+  if ((normalizedOp !== 'UNION' && normalizedOp !== 'SUBTRACT') || !stationarySolid || !movingSolid) {
+    return {
+      stationarySolid,
+      movingSolid,
+      conditioningApplied: false,
+      faceAdjustments: [],
+      fallbackFaceAdjustments: [],
+      plan: null,
+      fallbackPlan: null,
+    };
+  }
+
+  const scaleHint = Math.max(__booleanApproxScale(stationarySolid), __booleanApproxScale(movingSolid), 1);
+  const options = {
+    ...__booleanResolveConditioningOptions(scaleHint),
+    conditioningMode: normalizedOp,
+  };
+  const moveClone = typeof movingSolid.clone === 'function' ? movingSolid.clone() : movingSolid;
+  const plan = buildBooleanOverlapConditioningPlan(stationarySolid, moveClone, options);
+  const faceAdjustments = __booleanApplyFaceAdjustments(moveClone, plan?.faceAdjustments, debugLog, context);
+  if (faceAdjustments.length > 0) {
+    debugLog?.('Applied boolean overlap conditioning', {
+      context,
+      operation: normalizedOp,
+      overlapCount: plan?.overlapCount || 0,
+      adjustments: faceAdjustments,
+    });
+    return {
+      stationarySolid,
+      movingSolid: moveClone,
+      conditioningApplied: true,
+      faceAdjustments,
+      fallbackFaceAdjustments: [],
+      plan,
+      fallbackPlan: null,
+    };
+  }
+
+  if (normalizedOp !== 'UNION' || typeof stationarySolid.clone !== 'function') {
+    return {
+      stationarySolid,
+      movingSolid,
+      conditioningApplied: false,
+      faceAdjustments: [],
+      fallbackFaceAdjustments: [],
+      plan,
+      fallbackPlan: null,
+    };
+  }
+
+  const stationaryClone = stationarySolid.clone();
+  const fallbackPlan = buildBooleanOverlapConditioningPlan(movingSolid, stationaryClone, options);
+  const fallbackFaceAdjustments = __booleanApplyFaceAdjustments(stationaryClone, fallbackPlan?.faceAdjustments, debugLog, context);
+  if (fallbackFaceAdjustments.length > 0) {
+    debugLog?.('Applied boolean overlap conditioning via stationary fallback', {
+      context,
+      operation: normalizedOp,
+      overlapCount: fallbackPlan?.overlapCount || 0,
+      adjustments: fallbackFaceAdjustments,
+    });
+    return {
+      stationarySolid: stationaryClone,
+      movingSolid,
+      conditioningApplied: true,
+      faceAdjustments: [],
+      fallbackFaceAdjustments,
+      plan,
+      fallbackPlan,
+    };
+  }
+
+  return {
+    stationarySolid,
+    movingSolid,
+    conditioningApplied: false,
+    faceAdjustments: [],
+    fallbackFaceAdjustments: [],
+    plan,
+    fallbackPlan,
+  };
 }
 
 async function __booleanPostTinyFaceCleanup(solid, debugLog, context = null) {
@@ -561,12 +711,14 @@ export async function applyBooleanOperation(partHistory, baseSolid, booleanParam
     if (tools.length === 0) return { added: [baseSolid], removed: [] };
 
     const debugLog = __booleanDebugLogger(featureID, op, baseSolid, tools);
+    const overlapConditioningEnabled = booleanParam?.overlapConditioningEnabled !== false;
     debugLog('Starting boolean', {
       featureID,
       operation: op,
       base: __booleanDebugSummarizeSolid(baseSolid),
       tools: tools.map(__booleanDebugSummarizeSolid),
       targetCount: tools.length,
+      overlapConditioningEnabled,
     });
 
     // Apply selected boolean
@@ -575,24 +727,6 @@ export async function applyBooleanOperation(partHistory, baseSolid, booleanParam
       // FROM each selected target solid. Add robust fallbacks similar to UNION.
       const results = [];
       let idx = 0;
-      // Local helpers (avoid depending on later declarations)
-      const approxScaleLocal = (solid) => {
-        try {
-          const vp = solid && solid._vertProperties;
-          if (!Array.isArray(vp) || vp.length < 3) return 1;
-          let minX = +Infinity, minY = +Infinity, minZ = +Infinity;
-          let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-          for (let i = 0; i < vp.length; i += 3) {
-            const x = vp[i], y = vp[i + 1], z = vp[i + 2];
-            if (x < minX) minX = x; if (x > maxX) maxX = x;
-            if (y < minY) minY = y; if (y > maxY) maxY = y;
-            if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
-          }
-          const dx = maxX - minX, dy = maxY - minY, dz = maxZ - minZ;
-          const diag = Math.hypot(dx, dy, dz);
-          return (diag > 0) ? diag : Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz), 1);
-        } catch { return 1; }
-      };
       const preCleanLocal = (solid, eps) => {
         try { if (typeof solid.setEpsilon === 'function') solid.setEpsilon(eps); } catch {}
         try { if (typeof solid.fixTriangleWindingsByAdjacency === 'function') solid.fixTriangleWindingsByAdjacency(); } catch {}
@@ -610,9 +744,20 @@ export async function applyBooleanOperation(partHistory, baseSolid, booleanParam
       };
 
       for (const target of tools) {
+        let conditionedTarget = target;
+        let conditionedTool = baseSolid;
+        if (overlapConditioningEnabled) {
+          const conditioning = __booleanConditionOperands('SUBTRACT', target, baseSolid, debugLog, {
+            featureID,
+            target: target?.name || target?.uuid || null,
+            tool: baseSolid?.name || baseSolid?.uuid || null,
+          });
+          conditionedTarget = conditioning.stationarySolid || target;
+          conditionedTool = conditioning.movingSolid || baseSolid;
+        }
         let success = false;
         try {
-          const out = target.subtract(baseSolid);
+          const out = conditionedTarget.subtract(conditionedTool);
           await addResult(out, target);
           success = true;
         } catch (e1) {
@@ -625,9 +770,9 @@ export async function applyBooleanOperation(partHistory, baseSolid, booleanParam
         if (success) continue;
 
         try {
-          const a = typeof target.clone === 'function' ? target.clone() : target;
-          const b = typeof baseSolid.clone === 'function' ? baseSolid.clone() : baseSolid;
-          const scale = Math.max(1, approxScaleLocal(a));
+          const a = typeof conditionedTarget.clone === 'function' ? conditionedTarget.clone() : conditionedTarget;
+          const b = typeof conditionedTool.clone === 'function' ? conditionedTool.clone() : conditionedTool;
+          const scale = Math.max(1, __booleanApproxScale(a));
           const eps = Math.max(1e-9, 1e-6 * scale);
           preCleanLocal(a, eps);
           preCleanLocal(b, eps);
@@ -654,25 +799,6 @@ export async function applyBooleanOperation(partHistory, baseSolid, booleanParam
       return { added: results.length ? results : [baseSolid], removed };
     }
 
-    // Helper: approximate scale from authoring arrays (avoids manifold build)
-    const approxScale = (solid) => {
-      try {
-        const vp = solid && solid._vertProperties;
-        if (!Array.isArray(vp) || vp.length < 3) return 1;
-        let minX = +Infinity, minY = +Infinity, minZ = +Infinity;
-        let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-        for (let i = 0; i < vp.length; i += 3) {
-          const x = vp[i], y = vp[i + 1], z = vp[i + 2];
-          if (x < minX) minX = x; if (x > maxX) maxX = x;
-          if (y < minY) minY = y; if (y > maxY) maxY = y;
-          if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
-        }
-        const dx = maxX - minX, dy = maxY - minY, dz = maxZ - minZ;
-        const diag = Math.hypot(dx, dy, dz);
-        return (diag > 0) ? diag : Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz), 1);
-      } catch { return 1; }
-    };
-
     // Helper: light pre-clean in authoring space (no manifold build)
     const preClean = (solid, eps) => {
       try { if (typeof solid.fixTriangleWindingsByAdjacency === 'function') solid.fixTriangleWindingsByAdjacency(); } catch {}
@@ -687,29 +813,41 @@ export async function applyBooleanOperation(partHistory, baseSolid, booleanParam
         return { added: [baseSolid], removed: [] };
       }
 
-      const scale = Math.max(1, approxScale(result));
+      let workingResult = result;
+      let workingTool = tool;
+      if (overlapConditioningEnabled && op === 'UNION') {
+        const conditioning = __booleanConditionOperands('UNION', result, tool, debugLog, {
+          featureID,
+          base: result?.name || result?.uuid || null,
+          tool: tool?.name || tool?.uuid || null,
+        });
+        workingResult = conditioning.stationarySolid || result;
+        workingTool = conditioning.movingSolid || tool;
+      }
+
+      const scale = Math.max(1, __booleanApproxScale(workingResult));
       const eps = Math.max(1e-9, 1e-6 * scale);
 
       try {
         // Attempt the boolean directly; repair fallback handles welding if needed.
-        result = (op === 'UNION') ? result.union(tool) : result.intersect(tool);
+        result = (op === 'UNION') ? workingResult.union(workingTool) : workingResult.intersect(workingTool);
       } catch (e1) {
         debugLog('Primary union/intersect failed; attempting welded fallback', {
           message: e1?.message || e1,
-          tool: __booleanDebugSummarizeSolid(tool),
+          tool: __booleanDebugSummarizeSolid(workingTool),
           epsilon: eps,
         });
         let repaired = false;
         try {
-          const repairedBase = __booleanAttemptRepairSolid(result, eps, debugLog);
-          const repairedTool = __booleanAttemptRepairSolid(tool, eps, debugLog);
+          const repairedBase = __booleanAttemptRepairSolid(workingResult, eps, debugLog);
+          const repairedTool = __booleanAttemptRepairSolid(workingTool, eps, debugLog);
           if (repairedBase || repairedTool) {
             debugLog('Attempting repair fallback', {
               repairedBase: !!repairedBase,
               repairedTool: !!repairedTool,
             });
-            const baseOperand = repairedBase || (typeof result.clone === 'function' ? result.clone() : result);
-            const toolOperand = repairedTool || (typeof tool.clone === 'function' ? tool.clone() : tool);
+            const baseOperand = repairedBase || (typeof workingResult.clone === 'function' ? workingResult.clone() : workingResult);
+            const toolOperand = repairedTool || (typeof workingTool.clone === 'function' ? workingTool.clone() : workingTool);
             preClean(baseOperand, eps);
             preClean(toolOperand, eps);
             result = (op === 'UNION') ? baseOperand.union(toolOperand) : baseOperand.intersect(toolOperand);
@@ -721,8 +859,8 @@ export async function applyBooleanOperation(partHistory, baseSolid, booleanParam
         if (repaired) continue;
         // Fallback A: try on welded clones with tiny epsilon
         try {
-          const a = typeof result.clone === 'function' ? result.clone() : result;
-          const b = typeof tool.clone === 'function' ? tool.clone() : tool;
+          const a = typeof workingResult.clone === 'function' ? workingResult.clone() : workingResult;
+          const b = typeof workingTool.clone === 'function' ? workingTool.clone() : workingTool;
           preClean(a, eps);
           preClean(b, eps);
           result = (op === 'UNION') ? a.union(b) : a.intersect(b);
@@ -730,7 +868,7 @@ export async function applyBooleanOperation(partHistory, baseSolid, booleanParam
           let meshRecovered = false;
           if (op === 'UNION') {
             try {
-              const merged = __booleanMeshMergeUnion(result, tool, eps, debugLog);
+              const merged = __booleanMeshMergeUnion(workingResult, workingTool, eps, debugLog);
               if (merged) {
                 debugLog('Mesh-merge fallback succeeded');
                 const repairedMerged = __booleanAttemptRepairSolid(merged, eps, debugLog) || merged;
