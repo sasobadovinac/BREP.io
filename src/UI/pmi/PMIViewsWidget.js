@@ -15,6 +15,9 @@ const PMI_EXPORT_CAPTURE_WIDTH_PX = 2400;
 const PMI_EXPORT_CAPTURE_HEIGHT_PX = 1800;
 const DEFAULT_PMI_VIEW_TEXT_SIZE_PT = 12;
 const SVG_NS = 'http://www.w3.org/2000/svg';
+const CSS_COLOR_RE = /^#[0-9a-f]{3,8}$/i;
+const CSS_FUNCTION_COLOR_RE = /^(rgb|rgba|hsl|hsla)\([^)]+\)$/i;
+const CSS_NAMED_COLOR_RE = /^[a-zA-Z]+$/;
 
 export class PMIViewsWidget {
   constructor(viewer, { readOnly = false } = {}) {
@@ -307,6 +310,21 @@ export class PMIViewsWidget {
 
   _shouldRenderMonochromeCenterLines(renderContext = null) {
     return this._isMonochromeExport(renderContext) && renderContext?.showCenterLines === true;
+  }
+
+  _normalizeExportBackdropColor(color, fallback = null) {
+    const text = String(color ?? '').trim();
+    if (!text) return fallback;
+    if (/^transparent$/i.test(text)) return null;
+    if (CSS_COLOR_RE.test(text) || CSS_FUNCTION_COLOR_RE.test(text) || CSS_NAMED_COLOR_RE.test(text)) {
+      return text;
+    }
+    return fallback;
+  }
+
+  _getMonochromeLabelBackdropColor(renderContext = null) {
+    if (!this._isMonochromeExport(renderContext)) return null;
+    return this._normalizeExportBackdropColor(renderContext?.labelBackdropColor, null);
   }
 
   _createTransparentImageDataUrl(width, height) {
@@ -711,9 +729,10 @@ export class PMIViewsWidget {
       fontSize,
       layout,
     } = layoutData;
+    const monochromeBackdrop = this._getMonochromeLabelBackdropColor(renderContext);
 
     for (const entry of layout) {
-      if (!isMonochrome) {
+      if (!isMonochrome || monochromeBackdrop) {
         const rect = document.createElementNS(SVG_NS, 'rect');
         rect.setAttribute('x', entry.x.toFixed(3));
         rect.setAttribute('y', entry.y.toFixed(3));
@@ -721,9 +740,9 @@ export class PMIViewsWidget {
         rect.setAttribute('ry', String(radius));
         rect.setAttribute('width', entry.boxWidth.toFixed(3));
         rect.setAttribute('height', entry.boxHeight.toFixed(3));
-        rect.setAttribute('fill', 'rgba(17,24,39,0.92)');
-        rect.setAttribute('stroke', '#111827');
-        rect.setAttribute('stroke-width', '1');
+        rect.setAttribute('fill', isMonochrome ? monochromeBackdrop : 'rgba(17,24,39,0.92)');
+        rect.setAttribute('stroke', isMonochrome ? 'none' : '#111827');
+        rect.setAttribute('stroke-width', isMonochrome ? '0' : '1');
         labelGroup.appendChild(rect);
       }
 
@@ -995,6 +1014,7 @@ export class PMIViewsWidget {
       viewport,
       renderMode,
       showCenterLines,
+      labelBackdropColor: this._normalizeExportBackdropColor(options?.labelBackdropColor, null),
       targetFrameWidthIn: Number(options?.targetFrameWidthIn) > 0 ? Number(options.targetFrameWidthIn) : null,
       targetFrameHeightIn: Number(options?.targetFrameHeightIn) > 0 ? Number(options.targetFrameHeightIn) : null,
       dispose: () => {
@@ -1459,6 +1479,7 @@ export class PMIViewsWidget {
     hideViewCube = true,
     renderMode = 'shaded',
     showCenterLines = false,
+    labelBackdropColor = null,
     targetFrameWidthIn = null,
     targetFrameHeightIn = null,
   } = {}) {
@@ -1470,6 +1491,7 @@ export class PMIViewsWidget {
     const renderContext = this._createExportRenderContext(captureViewport, view, {
       renderMode,
       showCenterLines,
+      labelBackdropColor,
       targetFrameWidthIn,
       targetFrameHeightIn,
     });
@@ -1609,8 +1631,7 @@ export class PMIViewsWidget {
           this._applyView(v, { index: idx });
           return;
         }
-        this._enterEditMode(v, idx);
-        setTimeout(() => this._enterEditMode(v, idx), 200);
+        this.enterEditMode(v, idx);
       });
       row.appendChild(nameButton);
 
@@ -2275,8 +2296,12 @@ export class PMIViewsWidget {
     }
 
     const escape = (s) => this._escapeXML(String(s));
+    const monochromeBackdrop = this._getMonochromeLabelBackdropColor(renderContext);
     const rects = isMonochrome
-      ? ''
+      ? (monochromeBackdrop
+        ? layout.map(({ x, y, boxWidth, boxHeight }) =>
+          `<rect x="${x.toFixed(3)}" y="${y.toFixed(3)}" rx="${radius}" ry="${radius}" width="${boxWidth.toFixed(3)}" height="${boxHeight.toFixed(3)}" fill="${escape(monochromeBackdrop)}" stroke="none" stroke-width="0"/>`).join('')
+        : '')
       : layout.map(({ x, y, boxWidth, boxHeight }) =>
         `<rect x="${x.toFixed(3)}" y="${y.toFixed(3)}" rx="${radius}" ry="${radius}" width="${boxWidth.toFixed(3)}" height="${boxHeight.toFixed(3)}" fill="rgba(17,24,39,0.92)" stroke="#111827" stroke-width="1"/>`).join('');
 
@@ -2685,6 +2710,11 @@ export class PMIViewsWidget {
 
     try { this._applyView(view, { index }); } catch {}
     try { this.viewer.startPMIMode?.(view, index, this, { fromViewClick: true }); } catch {}
+  }
+
+  enterEditMode(view, index) {
+    this._enterEditMode(view, index);
+    setTimeout(() => this._enterEditMode(view, index), 200);
   }
 
   // --- Helpers: view settings ---

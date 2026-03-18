@@ -2826,6 +2826,10 @@ export class Sheet2DEditorWindow {
     }
 
     if (addedTableItems) this._appendContextMenuSeparator(menu);
+    if (singleSelection?.type === "pmiInset") {
+      this._appendContextMenuItem(menu, "Edit view", () => this._editPmiViewElement(singleSelection));
+      this._appendContextMenuSeparator(menu);
+    }
     if (this._canGroupSelectedElements()) {
       this._appendContextMenuItem(menu, "Group", () => this._groupSelectedElements());
     }
@@ -2839,6 +2843,32 @@ export class Sheet2DEditorWindow {
     this._appendContextMenuItem(menu, "Send to back", () => this._sendSelectedToBack());
     this._appendContextMenuItem(menu, "Duplicate", () => this._duplicateSelectedElement());
     this._appendContextMenuItem(menu, "Delete", () => this._deleteSelectedElement(), { danger: true });
+  }
+
+  _editPmiViewElement(element) {
+    if (!element || element.type !== "pmiInset") return false;
+    this._refreshPmiViews();
+    const view = this._resolvePmiViewForElement(element);
+    const viewIndex = this._resolvePmiViewIndexForElement(element, view);
+    const widget = this.viewer?.pmiViewsWidget || null;
+    const editView = typeof widget?.enterEditMode === "function"
+      ? widget.enterEditMode.bind(widget)
+      : null;
+    if (!view || viewIndex < 0 || !editView) {
+      this._setStatus("PMI view unavailable");
+      return false;
+    }
+
+    const previousSheetId = this.sheetId;
+    this.close();
+    try {
+      editView(view, viewIndex);
+      return true;
+    } catch {
+      this.open(previousSheetId || null);
+      this._setStatus("Could not open PMI view");
+      return false;
+    }
   }
 
   _openPmiPicker() {
@@ -6964,13 +6994,14 @@ export class Sheet2DEditorWindow {
   _getPmiImageCaptureKey(element, view = this._resolvePmiViewForElement(element), viewIndex = this._resolvePmiViewIndexForElement(element, view)) {
     const frame = this._getMediaFrameBox(element);
     return [
-      "trim-v5",
+      "trim-v6",
       this._getCurrentModelRevision(),
       this._pmiViewRevision,
       Number.isInteger(viewIndex) ? viewIndex : -1,
       String(view?.viewName || view?.name || element?.pmiViewName || "PMI View"),
       this._getPmiRenderMode(element),
       this._getPmiShowCenterLines(element) ? "centerlines:on" : "centerlines:off",
+      `labelbg:${isTransparentColor(element?.fill) ? "transparent" : toCssColor(element?.fill, "#ffffff").toLowerCase()}`,
       `frame:${toFiniteNumber(frame?.w, 0).toFixed(4)}x${toFiniteNumber(frame?.h, 0).toFixed(4)}`,
       this._getPmiViewStateSignature(view),
     ].join(":");
@@ -6992,6 +7023,7 @@ export class Sheet2DEditorWindow {
       .then(() => this._capturePmiViewImage(view, viewIndex, {
         renderMode: this._getPmiRenderMode(element),
         showCenterLines: this._getPmiShowCenterLines(element),
+        labelBackdropColor: element?.fill,
         targetFrameWidthIn: this._getMediaFrameBox(element)?.w,
         targetFrameHeightIn: this._getMediaFrameBox(element)?.h,
       }))
@@ -7131,6 +7163,7 @@ export class Sheet2DEditorWindow {
         const dataUrl = cached || await this._capturePmiViewImage(group.view, group.viewIndex, {
           renderMode: this._getPmiRenderMode(group.elementSnapshot),
           showCenterLines: this._getPmiShowCenterLines(group.elementSnapshot),
+          labelBackdropColor: group.elementSnapshot?.fill,
           targetFrameWidthIn: this._getMediaFrameBox(group.elementSnapshot)?.w,
           targetFrameHeightIn: this._getMediaFrameBox(group.elementSnapshot)?.h,
         });
@@ -7189,6 +7222,7 @@ export class Sheet2DEditorWindow {
   async _capturePmiViewImage(view, viewIndex, {
     renderMode = "shaded",
     showCenterLines = false,
+    labelBackdropColor = null,
     targetFrameWidthIn = null,
     targetFrameHeightIn = null,
   } = {}) {
@@ -7200,6 +7234,7 @@ export class Sheet2DEditorWindow {
       dataUrl = await widget.captureViewImageDataUrl(view, viewIndex, {
         renderMode: normalizePmiRenderMode(renderMode, "shaded"),
         showCenterLines: !!showCenterLines,
+        labelBackdropColor: String(labelBackdropColor ?? "").trim() || null,
         targetFrameWidthIn: Number(targetFrameWidthIn) > 0 ? Number(targetFrameWidthIn) : null,
         targetFrameHeightIn: Number(targetFrameHeightIn) > 0 ? Number(targetFrameHeightIn) : null,
       });
