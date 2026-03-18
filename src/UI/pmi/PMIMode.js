@@ -114,6 +114,7 @@ export class PMIMode {
       if (vs && typeof vs.wireframe === 'boolean') {
         this.#toggleWireframeMode(Boolean(vs.wireframe));
       }
+      this.viewer?.partHistory?.applyVisibilityState?.(vs?.visibilityState?.hidden || []);
     } catch { }
 
     // Build annotation group and render existing annotations
@@ -299,6 +300,12 @@ export class PMIMode {
         return entry;
       });
       this.viewEntry.annotations = JSON.parse(JSON.stringify(serializedAnnotations));
+      this.viewEntry.viewSettings = this.viewEntry.viewSettings && typeof this.viewEntry.viewSettings === 'object'
+        ? this.viewEntry.viewSettings
+        : {};
+      this.viewEntry.viewSettings.visibilityState = {
+        hidden: this.viewer?.partHistory?.captureVisibilityState?.() || [],
+      };
 
       this.#notifyViewMutated(refreshList);
     } catch { /* ignore */ }
@@ -406,26 +413,30 @@ export class PMIMode {
       this._originalSections = [];
       const accordion = v.accordion.uiElement;
 
-      // Find all accordion sections and hide them
-      const titles = accordion.querySelectorAll('.accordion-title');
-      const contents = accordion.querySelectorAll('.accordion-content');
-
-      titles.forEach(title => {
+      const titles = Array.from(accordion.querySelectorAll('.accordion-title'));
+      titles.forEach((title) => {
+        const titleText = String(title.textContent || '').trim();
+        const content = title.nextElementSibling?.classList?.contains('accordion-content')
+          ? title.nextElementSibling
+          : null;
+        if (titleText === 'Scene Manager') {
+          try { v.accordion.expandSection?.('Scene Manager'); } catch { }
+          return;
+        }
         this._originalSections.push({
           element: title,
           display: title.style.display || '',
-          visibility: title.style.visibility || ''
+          visibility: title.style.visibility || '',
         });
         title.style.display = 'none';
-      });
-
-      contents.forEach(content => {
-        this._originalSections.push({
-          element: content,
-          display: content.style.display || '',
-          visibility: content.style.visibility || ''
-        });
-        content.style.display = 'none';
+        if (content) {
+          this._originalSections.push({
+            element: content,
+            display: content.style.display || '',
+            visibility: content.style.visibility || '',
+          });
+          content.style.display = 'none';
+        }
       });
     } catch (e) {
       console.warn('Failed to hide original sidebar sections:', e);

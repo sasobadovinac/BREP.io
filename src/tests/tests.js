@@ -131,9 +131,19 @@ import {
     test_sheet_custom_size_persists,
     test_wire_harness_formboard_insert,
 } from './test_wireHarnessFormboard.js';
-import { test_pmi_view_text_size_setting_normalizes } from './test_pmiViewsManager.js';
+import {
+    test_pmi_view_text_size_setting_normalizes,
+    test_pmi_view_visibility_state_normalizes,
+} from './test_pmiViewsManager.js';
+import {
+    afterRun_pmi_view_visibility_state_round_trip,
+    test_pmi_view_visibility_state_round_trip,
+} from './test_pmiViewVisibilityState.js';
 import {
     test_pmi_enter_edit_mode_reuses_shared_flow,
+    test_pmi_effective_visibility_respects_hidden_ancestor,
+    test_pmi_export_render_context_applies_visibility_state,
+    test_pmi_monochrome_label_layout_is_tighter_than_shaded,
     test_pmi_monochrome_label_svg_uses_backdrop_color,
 } from './test_pmiViewsWidget.js';
 import {
@@ -268,8 +278,13 @@ export const testFunctions = [
     { test: test_wire_harness_connection_endpoint_resolution, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     { test: test_sheet_custom_size_persists, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     { test: test_pmi_view_text_size_setting_normalizes, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_pmi_view_visibility_state_normalizes, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_pmi_view_visibility_state_round_trip, afterRun: afterRun_pmi_view_visibility_state_round_trip, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     { test: test_pmi_monochrome_label_svg_uses_backdrop_color, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_pmi_monochrome_label_layout_is_tighter_than_shaded, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     { test: test_pmi_enter_edit_mode_reuses_shared_flow, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_pmi_export_render_context_applies_visibility_state, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_pmi_effective_visibility_respects_hidden_ancestor, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     { test: test_sheet_clipboard_image_utils, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     { test: test_wire_harness_formboard_insert, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     { test: test_wire_harness_sheet_table_insert, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },

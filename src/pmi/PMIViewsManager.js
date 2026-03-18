@@ -133,6 +133,19 @@ export class PMIViewsManager {
     } else {
       delete view.viewSettings.pmiTextSizePt;
     }
+    const hiddenVisibility = Array.isArray(view.viewSettings?.visibilityState?.hidden)
+      ? view.viewSettings.visibilityState.hidden
+        .map((entry) => ({
+          key: String(entry?.key || ''),
+          count: Math.max(1, Math.round(Number(entry?.count) || 1)),
+        }))
+        .filter((entry) => entry.key)
+      : [];
+    if (hiddenVisibility.length) {
+      view.viewSettings.visibilityState = { hidden: hiddenVisibility };
+    } else {
+      delete view.viewSettings.visibilityState;
+    }
     if (view.annotationHistory && typeof view.annotationHistory !== 'object') {
       delete view.annotationHistory;
     }

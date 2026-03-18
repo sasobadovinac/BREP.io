@@ -273,7 +273,8 @@ export class PartHistory {
     if (!obj || typeof obj !== 'object' || typeof obj.visible === 'undefined') return null;
 
     const type = String(obj.type || '').toUpperCase();
-    if (type !== 'SOLID' && type !== 'FACE' && type !== 'EDGE') return null;
+    const supportedTypes = new Set(['SOLID', 'COMPONENT', 'SKETCH', 'DATUM', 'HELIX', 'PLANE', 'FACE', 'EDGE']);
+    if (!supportedTypes.has(type)) return null;
 
     const anchor = this.#resolveVisibilityAnchor(obj);
     const anchorType = String(anchor?.type || '').toUpperCase();
@@ -343,6 +344,37 @@ export class PartHistory {
       if (remainingCount === 1) remaining.delete(key);
       else remaining.set(key, remainingCount - 1);
     });
+  }
+
+  captureVisibilityState() {
+    const hiddenKeyCounts = this.#captureHiddenVisibilityState();
+    return Array.from(hiddenKeyCounts.entries()).map(([key, count]) => ({
+      key,
+      count: Math.max(1, Number(count) || 1),
+    }));
+  }
+
+  applyVisibilityState(serializedState) {
+    const hiddenKeyCounts = new Map();
+    const entries = Array.isArray(serializedState) ? serializedState : [];
+    for (const entry of entries) {
+      const key = typeof entry === 'string' ? entry : String(entry?.key || '');
+      if (!key) continue;
+      const count = Math.max(1, Math.round(Number(typeof entry === 'string' ? 1 : entry?.count) || 1));
+      hiddenKeyCounts.set(key, (hiddenKeyCounts.get(key) || 0) + count);
+    }
+
+    if (this.scene && typeof this.scene.traverse === 'function') {
+      this.scene.traverse((obj) => {
+        if (!obj) return;
+        const key = this.#buildVisibilityPersistenceKey(obj);
+        if (!key) return;
+        try { obj.visible = true; } catch { }
+      });
+    }
+
+    this.#restoreHiddenVisibilityState(hiddenKeyCounts);
+    return hiddenKeyCounts;
   }
 
   static evaluateExpression(expressionsSource, equation) {

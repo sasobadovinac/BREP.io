@@ -129,6 +129,33 @@ export class PMIViewsWidget {
     return this._normalizeViewTextSizePt((view?.viewSettings || view?.settings)?.pmiTextSizePt, fallback);
   }
 
+  _captureCurrentVisibilityState() {
+    try {
+      const hidden = this.viewer?.partHistory?.captureVisibilityState?.();
+      return Array.isArray(hidden)
+        ? hidden
+          .map((entry) => ({
+            key: String(entry?.key || ''),
+            count: Math.max(1, Math.round(Number(entry?.count) || 1)),
+          }))
+          .filter((entry) => entry.key)
+        : [];
+    } catch {
+      return [];
+    }
+  }
+
+  _captureCurrentViewSettings(baseSettings = null) {
+    const settings = (baseSettings && typeof baseSettings === 'object')
+      ? { ...baseSettings }
+      : {};
+    settings.wireframe = this._detectWireframe(this.viewer?.scene);
+    const hidden = this._captureCurrentVisibilityState();
+    if (hidden.length) settings.visibilityState = { hidden };
+    else delete settings.visibilityState;
+    return settings;
+  }
+
   _updateViewportSensitiveRendering(width, height, viewerContext = this.viewer) {
     const safeWidth = Math.max(1, Number(width) || 1);
     const safeHeight = Math.max(1, Number(height) || 1);
@@ -496,6 +523,15 @@ export class PMIViewsWidget {
     return line;
   }
 
+  _isObjectEffectivelyVisible(obj) {
+    let current = obj;
+    while (current) {
+      if (current.visible === false) return false;
+      current = current.parent || null;
+    }
+    return true;
+  }
+
   _collectMeshContourSegments(mesh, camera, out = []) {
     const geom = mesh?.geometry;
     const posAttr = geom?.attributes?.position;
@@ -665,6 +701,17 @@ export class PMIViewsWidget {
     const safeCssWidth = Math.max(1, cssWidth || width);
     const dpr = Math.max(1, width / safeCssWidth);
     const fontSize = this._resolveLabelFontSizePx(renderContext) || (14 * dpr);
+    const isMonochrome = this._isMonochromeExport(renderContext);
+    if (isMonochrome) {
+      return {
+        dpr,
+        paddingX: Math.max(2 * dpr, fontSize * (4 / 14)),
+        paddingY: Math.max(1 * dpr, fontSize * (2 / 14)),
+        lineHeight: Math.max(fontSize, fontSize * (16 / 14)),
+        radius: Math.max(2 * dpr, fontSize * (3 / 14)),
+        fontSize,
+      };
+    }
     return {
       dpr,
       paddingX: Math.max(4 * dpr, fontSize * (8 / 14)),
@@ -886,7 +933,7 @@ export class PMIViewsWidget {
       });
 
       scene.traverse((obj) => {
-        if (!obj?.visible) return;
+        if (!obj?.visible || !this._isObjectEffectivelyVisible(obj)) return;
         if (!obj.isLine2 && !obj.isLineSegments2) return;
         const svgLine = this._buildSvgLineFromLine2(obj);
         if (!svgLine) return;
@@ -1849,10 +1896,7 @@ export class PMIViewsWidget {
         viewName: name,
         name,
         camera: cameraSnap,
-        // Persist basic view settings (extensible). Currently only wireframe render mode.
-        viewSettings: {
-          wireframe: this._detectWireframe(v?.scene)
-        },
+        viewSettings: this._captureCurrentViewSettings(),
         annotations: [],
       };
       const manager = this.viewer?.partHistory?.pmiViewsManager;
@@ -2016,6 +2060,9 @@ export class PMIViewsWidget {
         const vs = view.viewSettings || {};
         if (typeof vs.wireframe === 'boolean') {
           this._applyWireframe(renderContext?.scene, vs.wireframe);
+        }
+        if (typeof targetViewer?.partHistory?.applyVisibilityState === 'function') {
+          targetViewer.partHistory.applyVisibilityState(vs?.visibilityState?.hidden || []);
         }
       } catch { /* ignore */ }
 
@@ -2576,6 +2623,9 @@ export class PMIViewsWidget {
         if (typeof vs.wireframe === 'boolean') {
           this._applyWireframe(v?.scene, vs.wireframe);
         }
+        if (typeof v?.partHistory?.applyVisibilityState === 'function') {
+          v.partHistory.applyVisibilityState(vs?.visibilityState?.hidden || []);
+        }
       } catch { }
       try { this.viewer.render(); } catch { }
       if (!suppressActive && Number.isInteger(index)) {
@@ -2670,11 +2720,13 @@ export class PMIViewsWidget {
         const result = manager.updateView(index, (entry) => {
           if (!entry || typeof entry !== 'object') return entry;
           entry.camera = snap;
+          entry.viewSettings = this._captureCurrentViewSettings(entry.viewSettings);
           return entry;
         });
         updated = Boolean(result);
       } else if (Array.isArray(this.views) && this.views[index]) {
         this.views[index].camera = snap;
+        this.views[index].viewSettings = this._captureCurrentViewSettings(this.views[index].viewSettings);
         updated = true;
         this.refreshFromHistory();
       }

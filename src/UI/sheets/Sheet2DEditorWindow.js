@@ -6991,8 +6991,20 @@ export class Sheet2DEditorWindow {
     host.appendChild(svg);
   }
 
-  _getPmiImageCaptureKey(element, view = this._resolvePmiViewForElement(element), viewIndex = this._resolvePmiViewIndexForElement(element, view)) {
+  _resolvePmiLabelBackdropColor(element, sheetBackground = this.sheetDraft?.background) {
+    if (!element || element.type !== "pmiInset") return null;
+    if (!isTransparentColor(element?.fill)) return toCssColor(element?.fill, "#ffffff");
+    return isTransparentColor(sheetBackground) ? null : toCssColor(sheetBackground, "#ffffff");
+  }
+
+  _getPmiImageCaptureKey(
+    element,
+    view = this._resolvePmiViewForElement(element),
+    viewIndex = this._resolvePmiViewIndexForElement(element, view),
+    sheetBackground = this.sheetDraft?.background,
+  ) {
     const frame = this._getMediaFrameBox(element);
+    const labelBackdropColor = this._resolvePmiLabelBackdropColor(element, sheetBackground);
     return [
       "trim-v6",
       this._getCurrentModelRevision(),
@@ -7001,7 +7013,7 @@ export class Sheet2DEditorWindow {
       String(view?.viewName || view?.name || element?.pmiViewName || "PMI View"),
       this._getPmiRenderMode(element),
       this._getPmiShowCenterLines(element) ? "centerlines:on" : "centerlines:off",
-      `labelbg:${isTransparentColor(element?.fill) ? "transparent" : toCssColor(element?.fill, "#ffffff").toLowerCase()}`,
+      `labelbg:${String(labelBackdropColor || "transparent").toLowerCase()}`,
       `frame:${toFiniteNumber(frame?.w, 0).toFixed(4)}x${toFiniteNumber(frame?.h, 0).toFixed(4)}`,
       this._getPmiViewStateSignature(view),
     ].join(":");
@@ -7023,7 +7035,7 @@ export class Sheet2DEditorWindow {
       .then(() => this._capturePmiViewImage(view, viewIndex, {
         renderMode: this._getPmiRenderMode(element),
         showCenterLines: this._getPmiShowCenterLines(element),
-        labelBackdropColor: element?.fill,
+        labelBackdropColor: this._resolvePmiLabelBackdropColor(element),
         targetFrameWidthIn: this._getMediaFrameBox(element)?.w,
         targetFrameHeightIn: this._getMediaFrameBox(element)?.h,
       }))
@@ -7137,12 +7149,13 @@ export class Sheet2DEditorWindow {
           const selectedView = this._resolvePmiViewForElement(element);
           const viewIndex = this._resolvePmiViewIndexForElement(element, selectedView);
           if (!selectedView?.camera || viewIndex < 0) continue;
-          const captureKey = this._getPmiImageCaptureKey(element, selectedView, viewIndex);
+          const captureKey = this._getPmiImageCaptureKey(element, selectedView, viewIndex, sheet?.background);
           const group = groups.get(captureKey) || {
             captureKey,
             view: selectedView,
             viewIndex,
             elementSnapshot: deepClone(element),
+            sheetBackground: sheet?.background,
             targets: [],
           };
           group.targets.push({ sheetId, elementId: String(element?.id || "") });
@@ -7163,7 +7176,7 @@ export class Sheet2DEditorWindow {
         const dataUrl = cached || await this._capturePmiViewImage(group.view, group.viewIndex, {
           renderMode: this._getPmiRenderMode(group.elementSnapshot),
           showCenterLines: this._getPmiShowCenterLines(group.elementSnapshot),
-          labelBackdropColor: group.elementSnapshot?.fill,
+          labelBackdropColor: this._resolvePmiLabelBackdropColor(group.elementSnapshot, group.sheetBackground),
           targetFrameWidthIn: this._getMediaFrameBox(group.elementSnapshot)?.w,
           targetFrameHeightIn: this._getMediaFrameBox(group.elementSnapshot)?.h,
         });
@@ -7189,7 +7202,7 @@ export class Sheet2DEditorWindow {
               const elements = Array.isArray(sheetDraft?.elements) ? sheetDraft.elements : [];
               const element = elements.find((entry) => String(entry?.id || "") === String(target.elementId || ""));
               if (!element || element.type !== "pmiInset") return sheetDraft;
-              if (this._getPmiImageCaptureKey(element) !== group.captureKey) return sheetDraft;
+              if (this._getPmiImageCaptureKey(element, undefined, undefined, sheetDraft?.background) !== group.captureKey) return sheetDraft;
               if (this._setPmiInsetImageState(element, dataUrl, group.captureKey)) {
                 changed = true;
               }
