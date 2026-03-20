@@ -6,6 +6,7 @@ import {
 } from '../utils/browserStorage.js';
 import { SelectionFilter } from './SelectionFilter.js';
 import { SchemaForm } from './featureDialogs.js';
+import { ScriptedDemoMouse } from './demo/ScriptedDemoMouse.js';
 
 const TOUR_STORAGE_KEY = '__BREP_STARTUP_TOUR_DONE__';
 const TOUR_STORAGE_VALUE = '1';
@@ -381,8 +382,10 @@ export class StartupTour {
       x: Math.max(24, Math.round((typeof window !== 'undefined' ? window.innerWidth : 800) * 0.5)),
       y: Math.max(24, Math.round((typeof window !== 'undefined' ? window.innerHeight : 600) * 0.5)),
     };
+    this._demoMouse = null;
     this._stepRunToken = 0;
     this._liveDemoPrepared = false;
+    this._liveDemoCubeResized = false;
   }
 
   static isDone() {
@@ -547,6 +550,19 @@ export class StartupTour {
     this._closeBtn = closeBtn;
     this._cursor = cursor;
     this._cursorLabel = cursorLabel;
+    this._demoMouse = new ScriptedDemoMouse({
+      initialX: this._cursorPos.x,
+      initialY: this._cursorPos.y,
+      moveDuration: CURSOR_MOVE_MS,
+      clickHoldDuration: CURSOR_CLICK_MS,
+      onPositionChange: ({ x, y }) => {
+        this._cursorPos.x = x;
+        this._cursorPos.y = y;
+      },
+    }).attachCursor({
+      cursorEl: cursor,
+      labelEl: cursorLabel,
+    });
     this._applyCursorPosition();
   }
 
@@ -797,6 +813,8 @@ export class StartupTour {
     this._backBtn = null;
     this._skipBtn = null;
     this._closeBtn = null;
+    try { this._demoMouse?.detachCursor?.(); } catch { }
+    this._demoMouse = null;
     this._cursor = null;
     this._cursorLabel = null;
 
@@ -805,8 +823,7 @@ export class StartupTour {
 
   _cancelActiveStepWork() {
     this._stepRunToken += 1;
-    this._setCursorVisible(false);
-    this._setCursorLabel('');
+    this._demoMouse?.reset?.();
   }
 
   _isStepTokenActive(token) {
@@ -846,22 +863,30 @@ export class StartupTour {
     if (this._bodyEl) this._bodyEl.textContent = String(text || '');
   }
 
+  _createTourCancelledError() {
+    const error = new Error(TOUR_CANCELLED);
+    error.code = TOUR_CANCELLED;
+    return error;
+  }
+
+  _demoMouseOptions(token, extra = {}) {
+    return {
+      shouldContinue: () => this._isStepTokenActive(token),
+      onCancel: () => this._createTourCancelledError(),
+      ...extra,
+    };
+  }
+
   _applyCursorPosition() {
-    if (!this._cursor) return;
-    this._cursor.style.left = `${Math.round(this._cursorPos.x)}px`;
-    this._cursor.style.top = `${Math.round(this._cursorPos.y)}px`;
+    this._demoMouse?.renderCursor?.();
   }
 
   _setCursorVisible(visible) {
-    if (!this._cursor) return;
-    this._cursor.classList.toggle('is-visible', !!visible);
+    this._demoMouse?.setVisible?.(visible);
   }
 
   _setCursorLabel(text = '') {
-    if (!this._cursor || !this._cursorLabel) return;
-    const next = String(text || '').trim();
-    this._cursor.classList.toggle('has-label', !!next);
-    this._cursorLabel.textContent = next;
+    this._demoMouse?.setLabel?.(text);
   }
 
   async _moveCursorTo(x, y, {
@@ -870,47 +895,16 @@ export class StartupTour {
     label = '',
   } = {}) {
     this._assertStepToken(token);
-    const nextX = Number(x);
-    const nextY = Number(y);
-    if (!Number.isFinite(nextX) || !Number.isFinite(nextY)) return;
-    this._setCursorLabel(label);
-    this._setCursorVisible(true);
-    const startX = Number(this._cursorPos.x) || 0;
-    const startY = Number(this._cursorPos.y) || 0;
-    const total = Math.max(80, Number(duration) || CURSOR_MOVE_MS);
-    const started = performance.now();
-    await new Promise((resolve, reject) => {
-      const tick = (now) => {
-        if (!this._isStepTokenActive(token)) {
-          reject(Object.assign(new Error(TOUR_CANCELLED), { code: TOUR_CANCELLED }));
-          return;
-        }
-        const elapsed = now - started;
-        const t = Math.min(1, elapsed / total);
-        const eased = 1 - ((1 - t) * (1 - t) * (1 - t));
-        this._cursorPos.x = startX + ((nextX - startX) * eased);
-        this._cursorPos.y = startY + ((nextY - startY) * eased);
-        this._applyCursorPosition();
-        if (t >= 1) {
-          resolve();
-          return;
-        }
-        requestAnimationFrame(tick);
-      };
-      requestAnimationFrame(tick);
-    });
+    await this._demoMouse?.moveTo?.(x, y, this._demoMouseOptions(token, {
+      duration,
+      label,
+      visible: true,
+    }));
     this._assertStepToken(token);
   }
 
   _getElementPoint(element) {
-    if (!element?.getBoundingClientRect) return null;
-    const rect = element.getBoundingClientRect();
-    if (!rect || rect.width <= 0 || rect.height <= 0) return null;
-    return {
-      x: rect.left + (rect.width * 0.5),
-      y: rect.top + (rect.height * 0.5),
-      rect,
-    };
+    return this._demoMouse?.getElementPoint?.(element) || null;
   }
 
   async _waitForStableElementPoint(element, {
@@ -918,74 +912,50 @@ export class StartupTour {
     timeoutMs = 1200,
     intervalMs = 34,
   } = {}) {
-    let previous = null;
-    return this._waitFor(() => {
-      const point = this._getElementPoint(element);
-      if (!point) {
-        previous = null;
-        return null;
-      }
-      if (!previous) {
-        previous = point;
-        return null;
-      }
-      const dx = Math.abs(point.x - previous.x);
-      const dy = Math.abs(point.y - previous.y);
-      const dw = Math.abs((point.rect?.width || 0) - (previous.rect?.width || 0));
-      const dh = Math.abs((point.rect?.height || 0) - (previous.rect?.height || 0));
-      previous = point;
-      if (dx <= 1 && dy <= 1 && dw <= 1 && dh <= 1) return point;
-      return null;
-    }, {
+    return this._demoMouse?.waitForStableElementPoint?.(element, this._demoMouseOptions(token, {
       timeoutMs,
       intervalMs,
-      token,
-    });
+    })) || null;
   }
 
   async _moveCursorToElement(element, options = {}) {
     const token = options?.token ?? this._stepRunToken;
-    let point = null;
-    try {
-      point = await this._waitForStableElementPoint(element, { token });
-    } catch {
-      point = this._getElementPoint(element);
-    }
-    if (!point) return;
-    await this._moveCursorTo(point.x, point.y, options);
-    const settledPoint = this._getElementPoint(element);
-    if (!settledPoint) return;
-    const dx = Math.abs((Number(this._cursorPos.x) || 0) - settledPoint.x);
-    const dy = Math.abs((Number(this._cursorPos.y) || 0) - settledPoint.y);
-    if (dx > 2 || dy > 2) {
-      await this._moveCursorTo(settledPoint.x, settledPoint.y, {
-        ...options,
-        duration: Math.min(180, Number(options?.duration) || CURSOR_MOVE_MS),
-      });
-    }
+    await this._demoMouse?.moveToElement?.(element, this._demoMouseOptions(token, {
+      duration: options?.duration,
+      label: options?.label || '',
+      visible: true,
+    }));
   }
 
   _dispatchPointerEvent(target, type, clientX, clientY) {
-    if (!target?.dispatchEvent) return;
-    const init = {
-      bubbles: true,
-      cancelable: true,
-      composed: true,
+    if (!this._demoMouse) return;
+    if (type === 'pointerdown' || type === 'mousedown') {
+      void this._demoMouse.pressButton(target, {
+        button: 0,
+        x: clientX,
+        y: clientY,
+        focus: false,
+      });
+      return;
+    }
+    if (type === 'pointerup' || type === 'mouseup') {
+      void this._demoMouse.releaseButton(target, {
+        button: 0,
+        x: clientX,
+        y: clientY,
+        emitClick: false,
+      });
+      return;
+    }
+    if (type === 'pointermove' || type === 'mousemove') {
+      this._demoMouse.setPosition(clientX, clientY, { silent: true });
+      this._demoMouse.dispatchMove({ moveTarget: target });
+      return;
+    }
+    this._demoMouse.dispatchEventLike(target, type, {
       clientX,
       clientY,
-      button: 0,
-      buttons: type === 'pointerup' || type === 'mouseup' ? 0 : 1,
-      view: window,
-    };
-    try {
-      if (typeof PointerEvent === 'function' && type.startsWith('pointer')) {
-        target.dispatchEvent(new PointerEvent(type, init));
-        return;
-      }
-    } catch { }
-    try {
-      target.dispatchEvent(new MouseEvent(type.replace('pointer', 'mouse'), init));
-    } catch { }
+    });
   }
 
   async _dragCursorTo(x, y, {
@@ -998,32 +968,18 @@ export class StartupTour {
     const nextX = Number(x);
     const nextY = Number(y);
     if (!Number.isFinite(nextX) || !Number.isFinite(nextY)) return;
-    this._setCursorLabel(label);
-    this._setCursorVisible(true);
-    const startX = Number(this._cursorPos.x) || 0;
-    const startY = Number(this._cursorPos.y) || 0;
-    const total = Math.max(120, Number(duration) || CURSOR_MOVE_MS);
-    const steps = Math.max(8, Math.round(total / 24));
-
-    for (let index = 1; index <= steps; index += 1) {
-      this._assertStepToken(token);
-      const t = index / steps;
-      const eased = 1 - ((1 - t) * (1 - t) * (1 - t));
-      const currentX = startX + ((nextX - startX) * eased);
-      const currentY = startY + ((nextY - startY) * eased);
-      this._cursorPos.x = currentX;
-      this._cursorPos.y = currentY;
-      this._applyCursorPosition();
-      this._dispatchPointerEvent(moveTarget, 'pointermove', currentX, currentY);
-      await this._sleep(total / steps, token);
-    }
+    await this._demoMouse?.dragToPoint?.(nextX, nextY, this._demoMouseOptions(token, {
+      duration,
+      label,
+      moveTarget,
+    }));
   }
 
   async _pulseCursor(token = this._stepRunToken) {
     this._assertStepToken(token);
-    if (this._cursor) this._cursor.classList.add('is-clicking');
+    this._demoMouse?.animateCursorDown?.();
     await this._sleep(CURSOR_CLICK_MS, token);
-    if (this._cursor) this._cursor.classList.remove('is-clicking');
+    this._demoMouse?.animateCursorUp?.();
   }
 
   async _clickElement(element, {
@@ -1036,31 +992,13 @@ export class StartupTour {
       try { element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'auto' }); } catch { }
     }
     await this._sleep(80, token);
-    await this._moveCursorToElement(element, { duration, token, label });
-    let point = null;
-    try {
-      point = await this._waitForStableElementPoint(element, { token, timeoutMs: 800 });
-    } catch {
-      point = this._getElementPoint(element);
-    }
-    const x = point?.x ?? this._cursorPos.x;
-    const y = point?.y ?? this._cursorPos.y;
-    this._dispatchPointerEvent(element, 'pointerdown', x, y);
-    await this._pulseCursor(token);
-    this._dispatchPointerEvent(element, 'pointerup', x, y);
-    try { element.focus?.(); } catch { }
-    try { element.click?.(); } catch {
-      try {
-        element.dispatchEvent(new MouseEvent('click', {
-          bubbles: true,
-          cancelable: true,
-          composed: true,
-          clientX: x,
-          clientY: y,
-          view: window,
-        }));
-      } catch { }
-    }
+    await this._demoMouse?.click?.(element, this._demoMouseOptions(token, {
+      duration,
+      label,
+      holdDuration: CURSOR_CLICK_MS,
+      focus: true,
+      visible: true,
+    }));
     await this._sleep(120, token);
   }
 
@@ -1145,18 +1083,62 @@ export class StartupTour {
     const partHistory = this.viewer?.partHistory;
     if (!historyShadow || !partHistory) throw new Error('History UI is not ready.');
     const beforeCount = Array.isArray(partHistory.features) ? partHistory.features.length : 0;
-    const addBtn = historyShadow.querySelector('.hc-add-btn');
-    if (!addBtn) throw new Error('History add button is missing.');
-    await this._clickElement(addBtn, { token, label: 'Add feature' });
-    const menuItem = await this._waitFor(() => {
+    const findAddButton = () => historyShadow.querySelector('.hc-add-btn');
+    const findMenuItem = () => {
       const items = Array.from(historyShadow.querySelectorAll('.hc-menu-item'));
       return items.find((item) => String(item.textContent || '').trim() === String(featureLabel).trim()) || null;
-    }, { token });
-    await this._clickElement(menuItem, { token, label: featureLabel });
-    await this._waitFor(() => {
+    };
+    const getNewFeature = () => {
       const features = Array.isArray(partHistory.features) ? partHistory.features : [];
       return features.length > beforeCount ? features[features.length - 1] : null;
-    }, { timeoutMs: 12000, token });
+    };
+
+    const addBtn = findAddButton();
+    if (!addBtn) throw new Error('History add button is missing.');
+    await this._clickElement(addBtn, { token, label: 'Add feature' });
+    let menuItem = null;
+    try {
+      menuItem = await this._waitFor(findMenuItem, {
+        timeoutMs: 900,
+        token,
+      });
+    } catch {
+      const liveAddButton = findAddButton();
+      if (!liveAddButton) throw new Error('History add button disappeared before the menu opened.');
+      await this._moveCursorToElement(liveAddButton, {
+        token,
+        duration: 180,
+        label: 'Add feature',
+      });
+      await this._pulseCursor(token);
+      try { liveAddButton.click?.(); } catch { }
+      menuItem = await this._waitFor(findMenuItem, {
+        timeoutMs: 1800,
+        token,
+      });
+    }
+
+    await this._clickElement(menuItem, { token, label: featureLabel });
+    try {
+      await this._waitFor(getNewFeature, {
+        timeoutMs: 1200,
+        token,
+      });
+    } catch {
+      const liveMenuItem = findMenuItem();
+      if (!liveMenuItem) throw new Error(`History menu item "${featureLabel}" disappeared before activation.`);
+      await this._moveCursorToElement(liveMenuItem, {
+        token,
+        duration: 180,
+        label: featureLabel,
+      });
+      await this._pulseCursor(token);
+      try { liveMenuItem.click?.(); } catch { }
+      await this._waitFor(getNewFeature, {
+        timeoutMs: 12000,
+        token,
+      });
+    }
     const feature = this._getLatestFeature();
     const entryId = feature?.inputParams?.id || feature?.id || null;
     if (!entryId) throw new Error(`Failed to resolve ${featureLabel} entry id.`);
@@ -1557,6 +1539,7 @@ export class StartupTour {
       token,
       label: 'Drag X grip',
     });
+    this._liveDemoCubeResized = true;
   }
 
   async _configureCylinderFeature(feature, token) {
@@ -1622,6 +1605,7 @@ export class StartupTour {
     try { viewer.zoomToFit?.(1.2); } catch { }
     historyWidget.render?.();
     await this._sleep(250, token);
+    this._liveDemoCubeResized = false;
     this._liveDemoPrepared = true;
   }
 
@@ -1638,13 +1622,17 @@ export class StartupTour {
   }
 
   async _ensureLiveDemoCubeResized(token) {
-    const cubeFeature = await this._ensureLiveDemoCube(token);
+    const cubeFeature = this._findFeatureByShortName('P.CU') || await this._ensureLiveDemoCube(token);
     const entryId = this._getFeatureEntryId(cubeFeature);
     if (!entryId) return cubeFeature;
-    if (!this._isCloseToValue(cubeFeature?.inputParams?.sizeX, 16)) {
+    if (this._isCloseToValue(cubeFeature?.inputParams?.sizeX, 16)) {
+      this._liveDemoCubeResized = true;
+      return cubeFeature;
+    }
+    if (!this._liveDemoCubeResized) {
       await this._editCubeFeature(cubeFeature, token);
     }
-    return cubeFeature;
+    return this._findFeatureByShortName('P.CU') || cubeFeature;
   }
 
   async _ensureLiveDemoCylinder(token) {
