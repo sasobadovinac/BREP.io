@@ -161,6 +161,7 @@ Then open the Vite URL shown in your terminal.
 |---|---|
 | `pnpm dev` | Prepares fonts, builds the kernel bundle, then runs the Vite dev server. |
 | `pnpm build` | Production build of the app into `dist/` (includes kernel build step). |
+| `pnpm build:manifoldPlus` | Builds the local manifold wasm/js bundle from the `vendor/manifold3d` submodule plus local custom bindings. |
 | `pnpm build:kernel` | Builds the ESM kernel bundle into `dist-kernel/` and syncs assets. |
 | `pnpm test` | Runs the Node test suite (`src/tests/tests.js`), writing artifacts to `tests/results/`. |
 | `pnpm liveTesting` | Watches `src/` and `tests/` and reruns tests on change. |

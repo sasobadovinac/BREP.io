@@ -23,5 +23,7 @@ public/docs/*
 public/help/*
 public/fonts
 public/assets/*
+manifold-plus/build/*
+manifold-plus/dist/*
 pnpm-lock.yaml
 pnpm-lock.yaml

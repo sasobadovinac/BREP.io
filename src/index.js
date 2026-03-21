@@ -24,3 +24,4 @@ export { sketchToSVG, sketchToSVGPaths, sketchToDXF, sketchTo3DPolylines } from 
 
 // Full CAD app embed (iframe-based)
 export { CadEmbed, CADEmbed, bootCadFrame, bootCADFrame } from './UI/cad/CadEmbed.js';
+export { manifoldPlusSum } from './BREP/setupManifold.js';

@@ -35,7 +35,7 @@ const patchFileURLToPathForDataUrl = async () => {
 
 const loadModule = async () => {
   if (isNode) await patchFileURLToPathForDataUrl();
-  const mod = await import('manifold-3d');
+  const mod = await import('../../manifold-plus/dist/manifold.js');
   return mod?.default ?? mod;
 };
 
@@ -82,7 +82,7 @@ export const manifold = await (async () => {
   }
 
   // Browser (Vite): use ?url to get the WASM asset URL
-  const { default: wasmUrl } = await import('manifold-3d/manifold.wasm?url');
+  const { default: wasmUrl } = await import('../../manifold-plus/dist/manifold.wasm?url');
   const wasm = await initWasm({
     locateFile: () => wasmUrl,
   });
@@ -99,3 +99,4 @@ export const manifold = await (async () => {
 export const Manifold = manifold.Manifold;
 export const CrossSection = manifold.CrossSection;
 export const ManifoldMesh = manifold.Mesh;
+export const manifoldPlusSum = (a, b) => manifold.sum(a, b);

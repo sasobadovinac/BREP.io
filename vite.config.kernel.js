@@ -2,19 +2,18 @@
 import { defineConfig } from 'vite';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { createRequire } from 'module';
 import fs from 'fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const require = createRequire(import.meta.url);
-const wasmPath = require.resolve('manifold-3d/manifold.wasm');
+const wasmPath = resolve(__dirname, 'manifold-plus/dist/manifold.wasm');
 const wasmBase64 = fs.readFileSync(wasmPath, 'base64');
 
 function patchManifoldNodeImports() {
   return {
     name: 'patch-manifold-node-imports',
     transform(code, id) {
-      if (!id.includes('/manifold-3d/manifold.js')) return null;
+      const normalizedId = id.replaceAll('\\', '/');
+      if (!normalizedId.includes('/manifold-plus/dist/manifold.js')) return null;
 
       return {
         code: code

@@ -5,6 +5,14 @@ import { createRequire } from "module";
 export const LOCAL_LICENSE_SCAN_SOURCE =
   "installed node_modules graph (dependencies + optionalDependencies)";
 
+const VENDORED_MANIFOLD_PACKAGE_JSON = path.join(
+  "vendor",
+  "manifold3d",
+  "bindings",
+  "wasm",
+  "package.json"
+);
+
 const normalizeAuthor = (author) => {
   if (!author) return "";
   if (typeof author === "string") return author.trim();
@@ -98,6 +106,11 @@ const addPackageSummary = (packagesByKey, pkgJson) => {
   });
 };
 
+const collectVendoredPackageJsons = (cwd) => {
+  const vendoredPackageJsonPaths = [path.join(cwd, VENDORED_MANIFOLD_PACKAGE_JSON)];
+  return vendoredPackageJsonPaths.filter((candidate) => existsSync(candidate));
+};
+
 const buildLicenseMap = (packagesByKey) => {
   const data = {};
   for (const pkg of packagesByKey.values()) {
@@ -160,6 +173,17 @@ export const collectDependencyLicenseData = ({ cwd = process.cwd(), logger = con
     }
   }
 
+  const vendoredPackageJsonPaths = collectVendoredPackageJsons(cwd);
+  for (const packageJsonPath of vendoredPackageJsonPaths) {
+    try {
+      const pkgJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
+      addPackageSummary(packagesByKey, pkgJson);
+    } catch (error) {
+      const message = String(error?.message ?? error);
+      throw new Error(`Failed to parse ${packageJsonPath}: ${message}`);
+    }
+  }
+
   const data = buildLicenseMap(packagesByKey);
   const count = Object.values(data).reduce(
     (total, list) => total + (Array.isArray(list) ? list.length : 0),
@@ -177,6 +201,8 @@ export const collectDependencyLicenseData = ({ cwd = process.cwd(), logger = con
 
   return {
     data,
-    sourceLabel: LOCAL_LICENSE_SCAN_SOURCE,
+    sourceLabel: vendoredPackageJsonPaths.length
+      ? `${LOCAL_LICENSE_SCAN_SOURCE} + vendored third-party components`
+      : LOCAL_LICENSE_SCAN_SOURCE,
   };
 };
