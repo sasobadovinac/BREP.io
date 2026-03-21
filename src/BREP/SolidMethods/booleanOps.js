@@ -345,22 +345,7 @@ export function simplify(tolerance = undefined, updateInPlace = false) {
         this._vertKeyToIndex = new Map();
 
         // Keep existing face name map; best-effort completion for any new IDs
-        const completeMap = new Map(this._idToFaceName);
-        try {
-            const ids = meshOut.faceID && meshOut.faceID.length ? meshOut.faceID : null;
-            const triCount = (meshOut.triVerts?.length || 0) / 3 | 0;
-            if (ids && ids.length === triCount) {
-                const seen = new Set();
-                for (let t = 0; t < triCount; t++) {
-                    const id = ids[t] >>> 0;
-                    if (seen.has(id)) continue;
-                    seen.add(id);
-                    if (!completeMap.has(id)) completeMap.set(id, `FACE_${id}`);
-                }
-            } else if (!ids) {
-                if (!completeMap.has(0)) completeMap.set(0, 'FACE_0');
-            }
-        } catch { /* ignore */ }
+        const completeMap = _buildCompleteFaceIdMapForMesh(meshOut, this._idToFaceName);
         this._idToFaceName = completeMap;
         this._faceNameToID = new Map();
         for (const [id, name] of this._idToFaceName.entries()) {
@@ -403,6 +388,28 @@ export function _expandTriIDsFromMesh(mesh) {
     return new Array((mesh.triVerts.length / 3) | 0).fill(0);
 }
 
+function _buildCompleteFaceIdMapForMesh(mesh, idToFaceName) {
+    const sourceMap = new Map(idToFaceName);
+    const completeMap = new Map();
+    try {
+        const ids = mesh.faceID && mesh.faceID.length ? mesh.faceID : null;
+        const triCount = (mesh.triVerts?.length || 0) / 3 | 0;
+        if (ids && ids.length === triCount) {
+            const seen = new Set();
+            for (let t = 0; t < triCount; t++) {
+                const id = ids[t] >>> 0;
+                if (seen.has(id)) continue;
+                seen.add(id);
+                completeMap.set(id, sourceMap.get(id) ?? `FACE_${id}`);
+            }
+            return completeMap;
+        }
+    } catch (_) { /* best-effort completion */ }
+
+    completeMap.set(0, sourceMap.get(0) ?? 'FACE_0');
+    return completeMap;
+}
+
 export function _fromManifold(manifoldObj, idToFaceName) {
     const Solid = this;
     const mesh = manifoldObj.getMesh();
@@ -415,23 +422,7 @@ export function _fromManifold(manifoldObj, idToFaceName) {
     // Avoid O(vertexCount) string allocations here; authoring methods lazily rebuild this map.
     solid._vertKeyToIndex = new Map();
 
-    const completeMap = new Map(idToFaceName);
-    try {
-        const ids = mesh.faceID && mesh.faceID.length ? mesh.faceID : null;
-        const triCount = (mesh.triVerts?.length || 0) / 3 | 0;
-        if (ids && ids.length === triCount) {
-            const seen = new Set();
-            for (let t = 0; t < triCount; t++) {
-                const id = ids[t] >>> 0;
-                if (seen.has(id)) continue;
-                seen.add(id);
-                if (!completeMap.has(id)) completeMap.set(id, `FACE_${id}`);
-            }
-        } else if (!ids) {
-            if (!completeMap.has(0)) completeMap.set(0, 'FACE_0');
-        }
-    } catch (_) { /* best-effort completion */ }
-
+    const completeMap = _buildCompleteFaceIdMapForMesh(mesh, idToFaceName);
     solid._idToFaceName = new Map(completeMap);
     solid._faceNameToID = new Map();
     for (const [id, name] of solid._idToFaceName.entries()) {

@@ -25,6 +25,7 @@ export function constructorImpl() {
     this._faceIndex = null;           // lazy cache: id -> [triIndices]
     this._epsilon = 0;                // optional vertex weld tolerance (off by default)
     this._freeTimer = null;           // handle for scheduled wasm cleanup
+    this._cppSolidCore = null;        // optional reusable native authoring bridge
 
     this.type = 'SOLID';
     this.renderOrder = 1;
@@ -74,6 +75,7 @@ export function clone() {
     s._dirty = true;
     s._manifold = null;
     s._faceIndex = null;
+    s._cppSolidCore = null;
     s.type = 'SOLID';
     s.renderOrder = this.renderOrder;
     return s;
@@ -95,6 +97,10 @@ export function free() {
         if (this._manifold) {
             try { if (typeof this._manifold.delete === 'function') this._manifold.delete(); } catch (_) { }
             this._manifold = null;
+        }
+        if (this._cppSolidCore) {
+            try { if (typeof this._cppSolidCore.dispose === 'function') this._cppSolidCore.dispose(); } catch (_) { }
+            this._cppSolidCore = null;
         }
         this._dirty = true;
         this._faceIndex = null;

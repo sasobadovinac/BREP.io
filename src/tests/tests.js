@@ -37,6 +37,10 @@ import {
     test_fillet_edge_degenerate_segment,
 } from './test_fillet_edge_degenerate_segment.js';
 import {
+    afterRun_fillet_generated_history_20260321144106,
+    test_fillet_generated_history_20260321144106,
+} from './test_fillet_generated_history_20260321144106.js';
+import {
     afterRun_fillet_preserves_original_face_names,
     test_fillet_preserves_original_face_names,
 } from './test_fillet_preserves_original_face_names.js';
@@ -81,7 +85,38 @@ import {
     test_import3d_planar_extraction_merges_sliver_bridge,
 } from './test_import3dPlanarExtraction.js';
 import { test_mirror } from './test_mirror.js';
-import { test_cppSolidCore_preserves_face_ids_and_metadata } from './test_cppSolidCore.js';
+import {
+    afterRun_fillet_face_names_and_merge_metadata_survive_native_manifold_rebuild,
+    test_cppNative_prepareManifoldMesh_matches_legacy_js_reference,
+    test_fillet_face_names_and_merge_metadata_survive_native_manifold_rebuild,
+} from './test_cppFaceNamingRegression.js';
+import {
+    test_cppSolidCore_offsetFace_moves_vertices_for_face,
+    test_cppSolidCore_preserves_face_ids_and_metadata,
+    test_cppSolidCore_prepareManifoldMesh_repairs_orientation,
+    test_cppSolidCore_pushFace_moves_vertices_for_face,
+    test_cppSolidCore_setAuthoringState_and_bakeTransform,
+    test_cppSolidCore_weldVerticesByEpsilon_compacts_authoring_buffers,
+} from './test_cppSolidCore.js';
+import { test_cppSolidBakeTransform_updates_solid_authoring_state } from './test_cppSolidBakeTransform.js';
+import {
+    test_cppSolidNative_invertNormals_and_manifoldize_rebuilds_coherent_mesh,
+    test_cppSolidNative_offsetFace_updates_planar_face_vertices,
+    test_cppSolidNative_pushFace_updates_planar_face_vertices,
+    test_cppSolidNative_setEpsilon_welds_vertices,
+} from './test_cppSolidNativeOps.js';
+import {
+    test_cppTube_closed_hollow_tube_preserves_expected_face_labels,
+    test_cppTube_open_tube_preserves_expected_face_labels,
+    test_cppTube_union_preserves_distinct_face_labels_across_native_snapshots,
+} from './test_cppTube.js';
+import {
+    test_cppPrimitive_cone_preserves_expected_face_labels_and_metadata,
+    test_cppPrimitive_cube_preserves_expected_face_labels,
+    test_cppPrimitive_cylinder_preserves_expected_face_labels_and_metadata,
+    test_cppPrimitive_sphere_preserves_single_face_label,
+    test_cppPrimitive_torus_and_pyramid_preserve_face_labels,
+} from './test_cppPrimitives.js';
 import { test_manifoldPlus_sum } from './test_manifoldPlus.js';
 import {
     afterRun_offsetFace_preserves_individual_edges,
@@ -191,7 +226,26 @@ const TEST_LOG_PATH = path.join('tests', 'test-run.log');
 
 
 export const testFunctions = [
+    { test: test_cppNative_prepareManifoldMesh_matches_legacy_js_reference, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     { test: test_cppSolidCore_preserves_face_ids_and_metadata, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_cppSolidCore_setAuthoringState_and_bakeTransform, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_cppSolidCore_weldVerticesByEpsilon_compacts_authoring_buffers, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_cppSolidCore_pushFace_moves_vertices_for_face, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_cppSolidCore_offsetFace_moves_vertices_for_face, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_cppSolidCore_prepareManifoldMesh_repairs_orientation, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_cppSolidBakeTransform_updates_solid_authoring_state, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_cppSolidNative_setEpsilon_welds_vertices, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_cppSolidNative_pushFace_updates_planar_face_vertices, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_cppSolidNative_offsetFace_updates_planar_face_vertices, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_cppSolidNative_invertNormals_and_manifoldize_rebuilds_coherent_mesh, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_cppTube_open_tube_preserves_expected_face_labels, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_cppTube_closed_hollow_tube_preserves_expected_face_labels, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_cppTube_union_preserves_distinct_face_labels_across_native_snapshots, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_cppPrimitive_cube_preserves_expected_face_labels, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_cppPrimitive_cylinder_preserves_expected_face_labels_and_metadata, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_cppPrimitive_cone_preserves_expected_face_labels_and_metadata, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_cppPrimitive_torus_and_pyramid_preserve_face_labels, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_cppPrimitive_sphere_preserves_single_face_label, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     { test: test_manifoldPlus_sum, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     { test: test_plane, printArtifacts: false, exportFaces: true, exportSolids: true, resetHistory: true },
     { test: test_primitiveCube, printArtifacts: false, exportFaces: true, exportSolids: true, resetHistory: true },
@@ -356,8 +410,24 @@ export const testFunctions = [
         resetHistory: true,
     },
     {
+        test: test_fillet_generated_history_20260321144106,
+        afterRun: afterRun_fillet_generated_history_20260321144106,
+        printArtifacts: false,
+        exportFaces: false,
+        exportSolids: false,
+        resetHistory: true,
+    },
+    {
         test: test_fillet_preserves_original_face_names,
         afterRun: afterRun_fillet_preserves_original_face_names,
+        printArtifacts: false,
+        exportFaces: false,
+        exportSolids: false,
+        resetHistory: true,
+    },
+    {
+        test: test_fillet_face_names_and_merge_metadata_survive_native_manifold_rebuild,
+        afterRun: afterRun_fillet_face_names_and_merge_metadata_survive_native_manifold_rebuild,
         printArtifacts: false,
         exportFaces: false,
         exportSolids: false,

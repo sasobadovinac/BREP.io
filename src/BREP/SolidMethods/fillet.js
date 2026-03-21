@@ -15,7 +15,6 @@ function breakOnFaceNameMutation(faceName, reason = 'face_name_mutation', once =
     if (__SEEN_FACE_NAME_MUTATION_BREAKS.has(dedupeKey)) return;
     __SEEN_FACE_NAME_MUTATION_BREAKS.add(dedupeKey);
   }
-  // eslint-disable-next-line no-debugger
 }
 
 function createFaceTrianglesAccessor(solid) {
@@ -782,8 +781,12 @@ function mergeEntrySideWallFaces({
   if (includeEndCap) sideCandidates.push(`${filletName}_END_CAP_2`);
 
   const candidates = sideCandidates.filter((name) => faceSet.has(name));
+  const fallbackCandidates = (Array.isArray(names) ? names : [])
+    .filter((name) => typeof name === 'string' && isFallbackFaceName(name));
   if (candidates.length === 0) {
-    return { mergedFaceName: null, mergedCount: 0, mergedFaces: [] };
+    if (fallbackCandidates.length === 0) {
+      return { mergedFaceName: null, mergedCount: 0, mergedFaces: [] };
+    }
   }
 
   const tubeOuterFaceName = `${filletName}_TUBE_Outer`;
@@ -792,6 +795,10 @@ function mergeEntrySideWallFaces({
     : buildEdgeDerivedSideWallFaceName(entry, featureID);
   if (faceSet.has(targetFaceName) && !candidates.includes(targetFaceName)) {
     candidates.unshift(targetFaceName);
+  }
+  for (const fallbackName of fallbackCandidates) {
+    if (!fallbackName || fallbackName === targetFaceName) continue;
+    if (!candidates.includes(fallbackName)) candidates.push(fallbackName);
   }
 
   const mergedFaces = [];
@@ -875,6 +882,154 @@ function mergeFilletEntrySideWallsByEdge({
     mergedEntries,
     mergedFaces,
   };
+}
+
+function isFallbackFaceName(name) {
+  const raw = String(name || '').trim();
+  if (!raw) return true;
+  if (raw === 'FACE') return true;
+  return /^FACE_\d+$/.test(raw);
+}
+
+function boundaryPolylineLength(points) {
+  const pts = Array.isArray(points) ? points : [];
+  let length = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1];
+    const b = pts[i];
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length < 3 || b.length < 3) continue;
+    length += Math.hypot(
+      (b[0] || 0) - (a[0] || 0),
+      (b[1] || 0) - (a[1] || 0),
+      (b[2] || 0) - (a[2] || 0),
+    );
+  }
+  return length;
+}
+
+function estimateFaceArea(solid, faceName) {
+  try {
+    const tris = solid?.getFace?.(faceName);
+    if (!Array.isArray(tris) || tris.length === 0) return 0;
+    let area = 0;
+    for (const tri of tris) {
+      const p1 = tri?.p1;
+      const p2 = tri?.p2;
+      const p3 = tri?.p3;
+      if (!Array.isArray(p1) || !Array.isArray(p2) || !Array.isArray(p3)) continue;
+      const ax = p2[0] - p1[0];
+      const ay = p2[1] - p1[1];
+      const az = p2[2] - p1[2];
+      const bx = p3[0] - p1[0];
+      const by = p3[1] - p1[1];
+      const bz = p3[2] - p1[2];
+      const cx = ay * bz - az * by;
+      const cy = az * bx - ax * bz;
+      const cz = ax * by - ay * bx;
+      area += 0.5 * Math.hypot(cx, cy, cz);
+    }
+    return area;
+  } catch {
+    return 0;
+  }
+}
+
+function scoreFallbackRenameTarget(solid, faceName, featureID = '') {
+  const metadata = (solid && typeof solid.getFaceMetadata === 'function')
+    ? (solid.getFaceMetadata(faceName) || {})
+    : {};
+  const rawFeatureID = String(featureID || '').trim();
+  const sourceFeatureId = String(metadata?.sourceFeatureId || metadata?.featureID || '').trim();
+  const isFeatureOwned = !!rawFeatureID && (
+    sourceFeatureId === rawFeatureID
+    || String(faceName || '').startsWith(`${rawFeatureID}_`)
+  );
+  const isMergedSideWall = metadata?.filletSideWall === true || metadata?.filletMergedSideWall === true;
+  const hasRoundFaceMetadata = typeof metadata?.filletRoundFace === 'string' && metadata.filletRoundFace.trim().length > 0;
+  const rawName = String(faceName || '').trim();
+  const isTubeOuter = rawName.endsWith('_TUBE_Outer');
+  const isTubeCap = rawName.endsWith('_TUBE_CapStart') || rawName.endsWith('_TUBE_CapEnd');
+
+  let ownershipRank = 0;
+  if (isMergedSideWall) ownershipRank = 5;
+  else if (isFeatureOwned && (hasRoundFaceMetadata || isTubeOuter)) ownershipRank = 4;
+  else if (isFeatureOwned || isTubeCap) ownershipRank = 3;
+  else if (hasRoundFaceMetadata || isTubeOuter) ownershipRank = 2;
+  else ownershipRank = 1;
+
+  return {
+    ownershipRank,
+    area: estimateFaceArea(solid, faceName),
+  };
+}
+
+function relabelFallbackFacesByAdjacency(solid, opts = {}) {
+  if (!solid || typeof solid.getFaceNames !== 'function' || typeof solid.getBoundaryEdgePolylines !== 'function' || typeof solid.renameFace !== 'function') {
+    return 0;
+  }
+  const featureID = String(opts?.featureID || '').trim();
+
+  let renamed = 0;
+  for (let pass = 0; pass < 3; pass++) {
+    const faceNames = (solid.getFaceNames() || [])
+      .map((name) => String(name || '').trim())
+      .filter((name) => name.length > 0);
+    const fallbackNames = faceNames.filter(isFallbackFaceName);
+    if (fallbackNames.length === 0) break;
+
+    const boundaries = solid.getBoundaryEdgePolylines() || [];
+    const adjacency = new Map();
+    for (const fallbackName of fallbackNames) adjacency.set(fallbackName, new Map());
+
+    for (const polyline of boundaries) {
+      const faceA = String(polyline?.faceA || '').trim();
+      const faceB = String(polyline?.faceB || '').trim();
+      if (!faceA || !faceB || faceA === faceB) continue;
+      const length = boundaryPolylineLength(polyline?.positions || polyline?.pts);
+      if (!(length > 0)) continue;
+
+      if (adjacency.has(faceA) && !isFallbackFaceName(faceB)) {
+        adjacency.get(faceA).set(faceB, (adjacency.get(faceA).get(faceB) || 0) + length);
+      }
+      if (adjacency.has(faceB) && !isFallbackFaceName(faceA)) {
+        adjacency.get(faceB).set(faceA, (adjacency.get(faceB).get(faceA) || 0) + length);
+      }
+    }
+
+    let renamedThisPass = 0;
+    for (const fallbackName of fallbackNames) {
+      const neighbors = adjacency.get(fallbackName);
+      if (!neighbors || neighbors.size === 0) continue;
+
+      let bestName = null;
+      let bestOwnershipRank = -Infinity;
+      let bestSharedLength = -Infinity;
+      let bestArea = -Infinity;
+      for (const [neighborName, sharedLength] of neighbors.entries()) {
+        const score = scoreFallbackRenameTarget(solid, neighborName, featureID);
+        const ownershipRank = score.ownershipRank;
+        const area = score.area;
+        if (
+          ownershipRank > bestOwnershipRank
+          || (ownershipRank === bestOwnershipRank && sharedLength > bestSharedLength)
+          || (ownershipRank === bestOwnershipRank && sharedLength === bestSharedLength && area > bestArea)
+        ) {
+          bestOwnershipRank = ownershipRank;
+          bestSharedLength = sharedLength;
+          bestArea = area;
+          bestName = neighborName;
+        }
+      }
+      if (!bestName) continue;
+      solid.renameFace(fallbackName, bestName);
+      renamed += 1;
+      renamedThisPass += 1;
+    }
+
+    if (renamedThisPass === 0) break;
+  }
+
+  return renamed;
 }
 
 function buildDeterministicBridgeName(featureID, edgeNameA, edgeNameB, label = 'BRIDGE') {
@@ -1695,6 +1850,7 @@ function classifyEdgeFilletDirectionByInsideOutside(
  * @param {number} [opts.inflate=0.1] Inflation for cutting tube
  * @param {number} [opts.nudgeFaceDistance=0.0001] pushFace amount applied to wedge faces/end caps before boolean
  * @param {number} [opts.resolution=32] Tube resolution (segments around circumference)
+ * @param {number} [opts.cleanupTinyFaceIslandsArea=0.01] area threshold for reassigning tiny enclosed face-label islands (<= 0 disables)
  * @param {boolean} [opts.debug=false] Enable debug visuals in fillet builder
  * @param {number} [opts.debugSolidsLevel=0] -1=none, 0=tube+wedge, 1=edge fillet boolean result, 2=all intermediate solids
  * @param {boolean} [opts.debugShowCombinedBeforeTarget=false] Emit the combined fillet solid before target boolean
@@ -1727,6 +1883,10 @@ export async function fillet(opts = {}) {
   const resolution = (Number.isFinite(resolutionRaw) && resolutionRaw > 0)
     ? Math.max(8, Math.floor(resolutionRaw))
     : 32;
+  const cleanupTinyFaceIslandsAreaRaw = Number(opts.cleanupTinyFaceIslandsArea);
+  const cleanupTinyFaceIslandsArea = Number.isFinite(cleanupTinyFaceIslandsAreaRaw)
+    ? cleanupTinyFaceIslandsAreaRaw
+    : 0.01;
   const showTangentOverlays = !!opts.showTangentOverlays;
   const featureID = opts.featureID || 'FILLET';
 
@@ -2062,6 +2222,12 @@ export async function fillet(opts = {}) {
     console.warn('[Solid.fillet] collapseTinyTriangles failed', { featureID, error: err?.message || err });
   }
 
+  try {
+    relabelFallbackFacesByAdjacency(result, { featureID });
+  } catch (err) {
+    console.warn('[Solid.fillet] relabelFallbackFacesByAdjacency failed', { featureID, error: err?.message || err });
+  }
+
   // Attach debug artifacts for callers that want to add them to the scene
   attachDebugSolids(result);
   try {
@@ -2079,6 +2245,18 @@ export async function fillet(opts = {}) {
     await result.removeSmallIslands();
   } catch (err) {
     console.warn('[Solid.fillet] simplify failed; continuing without simplification', { featureID, error: err?.message || err });
+  }
+
+  try {
+    if (cleanupTinyFaceIslandsArea > 0 && typeof result.cleanupTinyFaceIslands === 'function') {
+      await result.cleanupTinyFaceIslands(cleanupTinyFaceIslandsArea);
+    }
+  } catch (err) {
+    console.warn('[Solid.fillet] cleanupTinyFaceIslands failed; continuing without face-island cleanup', {
+      featureID,
+      cleanupTinyFaceIslandsArea,
+      error: err?.message || err,
+    });
   }
 
   const finalTriCount = Array.isArray(result?._triVerts) ? (result._triVerts.length / 3) : 0;

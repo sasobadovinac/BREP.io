@@ -10,7 +10,12 @@ This is the first step toward moving the BREP kernel off the JavaScript side and
   - face-name to face-ID mapping
   - reverse face-ID to face-name mapping
   - face metadata and edge metadata as JSON blobs
+- It can now ingest/export full Solid authoring snapshots and run `bakeTransform`
+  over the vertex buffer on the C++ side.
+- It now also runs `weldVerticesByEpsilon` and `pushFace` on the C++ side.
 - `src/BREP/CppSolidCore.js` provides the JS bridge layer used by tests and future API adaptation work.
+- Migrated methods now require the custom local manifold build; they do not silently
+  fall back to the old JS implementation.
 
 ## Why this boundary
 
@@ -34,19 +39,24 @@ The first thing to move is the authoring-state owner, because every later expens
    - `addTriangle`
    - metadata set/get
 
-2. Move mesh/manifold rebuild work into `BrepSolidCore`
+2. Continue moving bulk authoring transforms into `BrepSolidCore`
+   - `bakeTransform` is now running in C++ via the bridge
+   - `pushFace` is now running in C++ via the bridge
+   - weld-by-epsilon is now running in C++ via the bridge
+   - next targets: `offsetFace`, mirror and cleanup/remesh passes
+
+3. Move mesh/manifold rebuild work into `BrepSolidCore`
    - winding correction
    - weld / epsilon handling
    - `_manifoldize`
    - boolean result reconstruction
 
-3. Move expensive geometry transforms and cleanup
-   - `bakeTransform`
+4. Move expensive geometry transforms and cleanup
    - `offsetFace`
    - `mirrorAcrossPlane`
    - remesh / degenerate cleanup / internal-triangle removal
 
-4. Keep visualization in JS
+5. Keep visualization in JS
    - `THREE.Group`
    - scene objects
    - material assignment

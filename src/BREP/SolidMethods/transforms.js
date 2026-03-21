@@ -1,5 +1,14 @@
 import { THREE } from "../SolidShared.js";
 import { composeTrsMatrixDeg } from "../../utils/xformMath.js";
+import {
+    CppSolidCore,
+    cppSolidCoreHasAuthoringBridge,
+    cppSolidCoreHasNativeOffsetFace,
+    cppSolidCoreHasNativePushFace,
+    requireCppSolidCoreCapability,
+    syncSolidAuthoringStateFromCpp,
+    syncSolidAuthoringStateToCpp,
+} from "../CppSolidCore.js";
 
 /**
  * Geometry transforms applied directly to authored data.
@@ -14,24 +23,17 @@ export function bakeTransform(matrix) {
         if (!matrix || typeof matrix.elements === 'undefined') return this;
         if (!Array.isArray(this._vertProperties) || this._vertProperties.length === 0) return this;
         const m = (matrix && matrix.isMatrix4) ? matrix : new THREE.Matrix4().fromArray(matrix.elements || matrix);
-        const e = m.elements;
-        const vp = this._vertProperties;
-        // Inline mat4 multiply for speed
-        for (let i = 0; i < vp.length; i += 3) {
-            const x = vp[i + 0], y = vp[i + 1], z = vp[i + 2];
-            const nx = e[0] * x + e[4] * y + e[8] * z + e[12];
-            const ny = e[1] * x + e[5] * y + e[9] * z + e[13];
-            const nz = e[2] * x + e[6] * y + e[10] * z + e[14];
-            vp[i + 0] = nx; vp[i + 1] = ny; vp[i + 2] = nz;
-        }
-        // Rebuild exact-key map and mark dirty
-        this._vertKeyToIndex = new Map();
-        for (let i = 0; i < vp.length; i += 3) {
-            const X = vp[i], Y = vp[i + 1], Z = vp[i + 2];
-            this._vertKeyToIndex.set(`${X},${Y},${Z}`, (i / 3) | 0);
-        }
+        requireCppSolidCoreCapability(cppSolidCoreHasAuthoringBridge, "Solid.bakeTransform()");
+        this._cppSolidCore = this._cppSolidCore || new CppSolidCore();
+        syncSolidAuthoringStateToCpp(this, this._cppSolidCore);
+        this._cppSolidCore.bakeTransform(m);
+        syncSolidAuthoringStateFromCpp(this, this._cppSolidCore);
         this._dirty = true;
         this._faceIndex = null;
+        try {
+            if (this._manifold && typeof this._manifold.delete === 'function') this._manifold.delete();
+        } catch { /* ignore */ }
+        this._manifold = null;
         // Bake the same transform into any auxiliary edges
         try {
             if (Array.isArray(this._auxEdges) && this._auxEdges.length) {
@@ -97,62 +99,23 @@ export function bakeTRS(trs) {
 export function offsetFace(faceName, distance) {
     const dist = Number(distance);
     if (!Number.isFinite(dist) || dist === 0) return this;
-    const id = this._faceNameToID.get(faceName);
-    if (id === undefined) return this; // unknown face name → no-op
+    const faceID = this._faceNameToID.get(faceName);
+    if (faceID === undefined) return this;
 
-    const mesh = this.getMesh();
-    const vp = mesh.vertProperties; // Float32Array
-    const tv = mesh.triVerts;       // Uint32Array
-    const faceIDs = mesh.faceID;    // Uint32Array
-    const triCount = (tv.length / 3) | 0;
-    if (!faceIDs || faceIDs.length !== triCount) return this;
-
-    // 1) Gather triangles and accumulate area-weighted normal.
-    let nx = 0, ny = 0, nz = 0;
-    const affectedVerts = new Set();
-    for (let t = 0; t < triCount; t++) {
-        if (faceIDs[t] !== id) continue;
-        const b = t * 3;
-        const i0 = tv[b + 0] >>> 0;
-        const i1 = tv[b + 1] >>> 0;
-        const i2 = tv[b + 2] >>> 0;
-        affectedVerts.add(i0); affectedVerts.add(i1); affectedVerts.add(i2);
-
-        const ax = vp[i0 * 3 + 0], ay = vp[i0 * 3 + 1], az = vp[i0 * 3 + 2];
-        const bx = vp[i1 * 3 + 0], by = vp[i1 * 3 + 1], bz = vp[i1 * 3 + 2];
-        const cx = vp[i2 * 3 + 0], cy = vp[i2 * 3 + 1], cz = vp[i2 * 3 + 2];
-        const ux = bx - ax, uy = by - ay, uz = bz - az;
-        const vx = cx - ax, vy = cy - ay, vz = cz - az;
-        nx += uy * vz - uz * vy;
-        ny += uz * vx - ux * vz;
-        nz += ux * vy - uy * vx;
-    }
-
-    // 2) Normalize to get unit average normal.
-    const len = Math.hypot(nx, ny, nz);
-    if (!(len > 0)) return this;
-    const sx = (nx / len) * dist;
-    const sy = (ny / len) * dist;
-    const sz = (nz / len) * dist;
-
-    // 3) Apply translation to authoring vertex buffer.
-    if (!this._vertProperties || this._vertProperties.length === 0) return this;
-    for (const vi of affectedVerts) {
-        const base = (vi * 3) | 0;
-        this._vertProperties[base + 0] += sx;
-        this._vertProperties[base + 1] += sy;
-        this._vertProperties[base + 2] += sz;
-    }
-
-    // 4) Rebuild exact-key map and mark dirty so manifold rebuilds on demand.
-    this._vertKeyToIndex = new Map();
-    for (let i = 0; i < this._vertProperties.length; i += 3) {
-        const x = this._vertProperties[i], y = this._vertProperties[i + 1], z = this._vertProperties[i + 2];
-        this._vertKeyToIndex.set(`${x},${y},${z}`, (i / 3) | 0);
-    }
+    requireCppSolidCoreCapability(
+        cppSolidCoreHasAuthoringBridge && cppSolidCoreHasNativeOffsetFace,
+        "Solid.offsetFace()"
+    );
+    this._cppSolidCore = this._cppSolidCore || new CppSolidCore();
+    syncSolidAuthoringStateToCpp(this, this._cppSolidCore);
+    const result = this._cppSolidCore.offsetFace(faceName, dist) || {};
+    if (!result.faceFound || !result.moved) return this;
+    syncSolidAuthoringStateFromCpp(this, this._cppSolidCore);
     this._dirty = true;
     this._faceIndex = null;
-    try { return this; } finally { try { if (mesh && typeof mesh.delete === 'function') mesh.delete(); } catch { } }
+    try { if (this._manifold && typeof this._manifold.delete === 'function') this._manifold.delete(); } catch { }
+    this._manifold = null;
+    return this;
 }
 
 /**
@@ -271,96 +234,27 @@ export function pushFace(faceName, distance = 0.001, options = {}) {
         return this;
     }
 
-    const triIDs = this._triIDs;
-    const triVerts = this._triVerts;
-    const vp = this._vertProperties;
-    if (!triIDs || !triVerts || !vp) return this;
-
-    const triCount = Math.min(triIDs.length, (triVerts.length / 3) | 0);
-    let nx = 0, ny = 0, nz = 0;
-    let areaSum = 0;
-    const affected = new Set();
-    const vertNormals = new Map();
-
-    for (let t = 0; t < triCount; t++) {
-        if (triIDs[t] !== faceID) continue;
-        const base = t * 3;
-        const i0 = triVerts[base + 0] >>> 0;
-        const i1 = triVerts[base + 1] >>> 0;
-        const i2 = triVerts[base + 2] >>> 0;
-        affected.add(i0); affected.add(i1); affected.add(i2);
-
-        const ax = vp[i0 * 3 + 0], ay = vp[i0 * 3 + 1], az = vp[i0 * 3 + 2];
-        const bx = vp[i1 * 3 + 0], by = vp[i1 * 3 + 1], bz = vp[i1 * 3 + 2];
-        const cx = vp[i2 * 3 + 0], cy = vp[i2 * 3 + 1], cz = vp[i2 * 3 + 2];
-        const ux = bx - ax, uy = by - ay, uz = bz - az;
-        const vx = cx - ax, vy = cy - ay, vz = cz - az;
-        const tx = uy * vz - uz * vy;
-        const ty = uz * vx - ux * vz;
-        const tz = ux * vy - uy * vx;
-        const tLen = Math.hypot(tx, ty, tz);
-        if (!(tLen > 0)) continue;
-        areaSum += tLen;
-        nx += tx; ny += ty; nz += tz;
-        const addNormal = (idx) => {
-            const existing = vertNormals.get(idx);
-            if (existing) {
-                existing[0] += tx;
-                existing[1] += ty;
-                existing[2] += tz;
-            } else {
-                vertNormals.set(idx, [tx, ty, tz]);
-            }
-        };
-        addNormal(i0); addNormal(i1); addNormal(i2);
+    requireCppSolidCoreCapability(
+        cppSolidCoreHasAuthoringBridge && cppSolidCoreHasNativePushFace,
+        "Solid.pushFace()"
+    );
+    this._cppSolidCore = this._cppSolidCore || new CppSolidCore();
+    syncSolidAuthoringStateToCpp(this, this._cppSolidCore);
+    const result = this._cppSolidCore.pushFace(faceName, dist) || {};
+    if (!result.faceFound) {
+        if (warnMissing) console.warn(`pushFace: Face "${faceName}" not found`);
+        return this;
     }
-
-    const affectedIndices = [...affected];
-    if (affectedIndices.length === 0) return this;
-
-    const len = Math.hypot(nx, ny, nz);
-    const planarRatio = areaSum > 0 ? (len / areaSum) : 0;
-    if (len > 0 && planarRatio > 0.98) {
-        // Push strictly along the outward normal derived from triangle winding;
-        // positive distance moves outward, negative moves inward.
-        const scale = dist / len;
-        const dx = nx * scale;
-        const dy = ny * scale;
-        const dz = nz * scale;
-        for (const idx of affectedIndices) {
-            const base = idx * 3;
-            vp[base + 0] += dx;
-            vp[base + 1] += dy;
-            vp[base + 2] += dz;
+    if (!result.moved) {
+        if (result.invalidNormal && warnInvalidNormal) {
+            console.warn(`pushFace: Invalid normal for face "${faceName}"`);
         }
-    } else {
-        // Fall back to per-vertex normals for curved faces.
-        let moved = 0;
-        for (const idx of affectedIndices) {
-            const normal = vertNormals.get(idx);
-            if (!normal) continue;
-            const nLen = Math.hypot(normal[0], normal[1], normal[2]);
-            if (!(nLen > 0)) continue;
-            const scale = dist / nLen;
-            const base = idx * 3;
-            vp[base + 0] += normal[0] * scale;
-            vp[base + 1] += normal[1] * scale;
-            vp[base + 2] += normal[2] * scale;
-            moved++;
-        }
-        if (moved === 0) {
-            if (warnInvalidNormal) console.warn(`pushFace: Invalid normal for face "${faceName}"`);
-            return this;
-        }
+        return this;
     }
-
-    this._vertKeyToIndex = new Map();
-    for (let i = 0; i < vp.length; i += 3) {
-        const x = vp[i], y = vp[i + 1], z = vp[i + 2];
-        this._vertKeyToIndex.set(`${x},${y},${z}`, (i / 3) | 0);
-    }
+    syncSolidAuthoringStateFromCpp(this, this._cppSolidCore);
     this._dirty = true;
     this._faceIndex = null;
+    try { if (this._manifold && typeof this._manifold.delete === 'function') this._manifold.delete(); } catch { }
     this._manifold = null;
     return this;
 }

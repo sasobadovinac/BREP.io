@@ -14,10 +14,19 @@ class BrepSolidCore {
   BrepSolidCore() = default;
 
   void Clear();
+  void SetAuthoringState(const emscripten::val& snapshot);
   uint32_t GetOrCreateFaceId(const std::string& face_name);
   uint32_t GetPointIndex(const emscripten::val& point);
   void AddTriangle(const std::string& face_name, const emscripten::val& v1,
                    const emscripten::val& v2, const emscripten::val& v3);
+  void BakeTransform(const emscripten::val& matrix_values);
+  void WeldVerticesByEpsilon(double eps);
+  emscripten::val PushFace(const std::string& face_name, double distance);
+  emscripten::val OffsetFace(const std::string& face_name, double distance);
+  bool IsCoherentlyOrientedManifold() const;
+  bool FixTriangleWindingsByAdjacency();
+  void InvertNormals();
+  emscripten::val PrepareManifoldMesh();
 
   void SetFaceMetadataJson(const std::string& face_name,
                            const std::string& metadata_json);
@@ -43,8 +52,20 @@ class BrepSolidCore {
       const std::unordered_map<std::string, uint32_t>& values);
   static emscripten::val ToFaceIdEntries(
       const std::unordered_map<uint32_t, std::string>& values);
+  static std::string MakeUndirectedEdgeKey(uint32_t a, uint32_t b);
+  static std::vector<float> ReadFloatArray(const emscripten::val& values,
+                                           const char* label);
+  static std::vector<uint32_t> ReadUint32Array(const emscripten::val& values,
+                                               const char* label);
+  static std::unordered_map<std::string, uint32_t> ReadStringUint32Map(
+      const emscripten::val& values, const char* label);
+  static std::unordered_map<uint32_t, std::string> ReadUint32StringMap(
+      const emscripten::val& values, const char* label);
+  static std::unordered_map<std::string, std::string> ReadStringMap(
+      const emscripten::val& values, const char* label);
   static void ReadPoint(const emscripten::val& point, double& x, double& y,
                         double& z);
+  void RebuildVertexKeyIndex();
 
   uint32_t num_prop_ = 3;
   std::vector<float> vert_properties_;
