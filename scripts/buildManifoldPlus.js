@@ -11,6 +11,16 @@ const emsdkDir = process.env.EMSDK || path.join(os.homedir(), "emsdk");
 const emsdkEnvScript = path.join(emsdkDir, "emsdk_env.sh");
 const emsdkVersion = "3.1.64";
 const isWindows = process.platform === "win32";
+const cmakeVenvDir = path.join(os.homedir(), ".cache", "brep-tools", "cmake-venv");
+const cmakeBinDir = isWindows
+  ? path.join(cmakeVenvDir, "Scripts")
+  : path.join(cmakeVenvDir, "bin");
+const cmakeBinary = isWindows
+  ? path.join(cmakeBinDir, "cmake.exe")
+  : path.join(cmakeBinDir, "cmake");
+const pipBinary = isWindows
+  ? path.join(cmakeBinDir, "pip.exe")
+  : path.join(cmakeBinDir, "pip");
 
 const run = (command, args, options = {}) => {
   const result = spawnSync(command, args, {
@@ -33,6 +43,13 @@ const run = (command, args, options = {}) => {
     const commandText = [command, ...args].join(" ");
     throw new Error(`Command failed: ${commandText}`);
   }
+};
+
+const prependToPath = (dir) => {
+  const currentPath = process.env.PATH || "";
+  const segments = currentPath.split(path.delimiter).filter(Boolean);
+  if (segments.includes(dir)) return;
+  process.env.PATH = [dir, ...segments].join(path.delimiter);
 };
 
 const runWithEmscripten = (commandText) => {
@@ -59,6 +76,42 @@ const runEmscriptenCommand = (command, args) => {
   run(command, args);
 };
 
+const ensureCmakeAvailable = () => {
+  const probe = spawnSync("cmake", ["--version"], {
+    cwd: rootDir,
+    stdio: "ignore",
+    shell: false,
+  });
+
+  if (probe.status === 0) {
+    return;
+  }
+
+  const pipProbe = spawnSync("python3", ["--version"], {
+    cwd: rootDir,
+    stdio: "ignore",
+    shell: false,
+  });
+  if (pipProbe.status !== 0) {
+    throw new Error(
+      "A runnable 'cmake' was not found, and python3 is unavailable to bootstrap one."
+    );
+  }
+
+  run("python3", ["-m", "venv", cmakeVenvDir]);
+  run(pipBinary, ["install", "--quiet", "cmake"]);
+  prependToPath(cmakeBinDir);
+
+  const venvProbe = spawnSync(cmakeBinary, ["--version"], {
+    cwd: rootDir,
+    stdio: "ignore",
+    shell: false,
+  });
+  if (venvProbe.status !== 0) {
+    throw new Error("Bootstrapped cmake virtualenv, but the cmake executable is still unavailable.");
+  }
+};
+
 const resolveBuiltArtifact = (buildDir, filename) => {
   const candidates = [
     path.join(buildDir, "vendor", "manifold3d", "bindings", "wasm", filename),
@@ -81,6 +134,7 @@ try {
     );
   }
 
+  ensureCmakeAvailable();
   mkdirSync(buildDir, { recursive: true });
 
   runEmscriptenCommand("emcmake", [

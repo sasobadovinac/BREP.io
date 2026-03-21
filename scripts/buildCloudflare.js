@@ -31,7 +31,7 @@ try {
     );
   }
 
-  const setupScript = `
+const setupScript = `
 set -euo pipefail
 if [ ! -d "${emsdkDir}" ]; then
   git clone https://github.com/emscripten-core/emsdk.git "${emsdkDir}"
