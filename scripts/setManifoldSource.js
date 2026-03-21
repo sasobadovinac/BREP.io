@@ -7,8 +7,8 @@ if (!requested) {
   process.exit(0);
 }
 
-if (requested !== "npm" && requested !== "local") {
-  console.error("Usage: node ./scripts/setManifoldSource.js <npm|local>");
+if (requested !== "local") {
+  console.error("Usage: node ./scripts/setManifoldSource.js <local>");
   process.exit(1);
 }
 

@@ -1,7 +1,6 @@
 // setupManifold.js (ESM)
 // Universal loader that works in both Node.js and the browser (Vite)
 import {
-  MANIFOLD_RUNTIME_IS_LOCAL,
   MANIFOLD_RUNTIME_SOURCE,
 } from "../generated/manifoldSource.js";
 
@@ -39,9 +38,7 @@ const patchFileURLToPathForDataUrl = async () => {
 
 const loadModule = async () => {
   if (isNode) await patchFileURLToPathForDataUrl();
-  const mod = MANIFOLD_RUNTIME_IS_LOCAL
-    ? await import('../../manifold-plus/dist/manifold.js')
-    : await import('manifold-3d');
+  const mod = await import('../../manifold-plus/dist/manifold.js');
   return mod?.default ?? mod;
 };
 
@@ -88,9 +85,7 @@ export const manifold = await (async () => {
   }
 
   // Browser (Vite): use ?url to get the WASM asset URL
-  const { default: wasmUrl } = MANIFOLD_RUNTIME_IS_LOCAL
-    ? await import('../../manifold-plus/dist/manifold.wasm?url')
-    : await import('manifold-3d/manifold.wasm?url');
+  const { default: wasmUrl } = await import('../../manifold-plus/dist/manifold.wasm?url');
   const wasm = await initWasm({
     locateFile: () => wasmUrl,
   });

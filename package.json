@@ -5,6 +5,7 @@
     "start": "pnpm dev",
     "dev": "node ./scripts/prepareFontAssets.js && pnpm prepareFonts && pnpm build:kernel && vite --host 0.0.0.0",
     "build": "pnpm prepareFonts && pnpm build:kernel && vite build",
+    "build:cloudflare": "node ./scripts/buildCloudflare.js",
     "build:manifoldPlus": "node ./scripts/buildManifoldPlus.js",
     "build:kernel": "node ./scripts/prepareManifoldRuntime.js && pnpm generateLicenses && vite build --config vite.config.kernel.js && node ./scripts/syncKernelAssets.js",
     "lint": "eslint .",
@@ -14,7 +15,6 @@
     "generateLicenses": "node ./generateLicenses.js && node ./scripts/generateLicenseBundle.js",
     "prepareFonts": "node ./scripts/prepareFontAssets.js",
     "capture": "node ./scripts/capture.js",
-    "use:manifold:npm": "node ./scripts/setManifoldSource.js npm",
     "use:manifold:local": "node ./scripts/setManifoldSource.js local",
     "which:manifold": "node ./scripts/setManifoldSource.js"
   },
@@ -54,7 +54,6 @@
     "html2canvas": "^1.4.1",
     "jspdf": "^4.2.0",
     "jszip": "^3.10.1",
-    "manifold-3d": "3.3.2",
     "monaco-editor": "^0.55.1",
     "pngjs": "^7.0.0",
     "tess2": "^1.0.0",
