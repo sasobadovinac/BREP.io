@@ -83,17 +83,28 @@ export class expressionsManager {
         const style = document.createElement('style');
         style.textContent = `
             .expressions-manager {
+                --expr-bg: #0f1117;
+                --expr-bg-elev: #12141b;
+                --expr-border: #262b36;
+                --expr-text: #e6e6e6;
+                --expr-muted: #9aa4b2;
+                --expr-focus: #3b82f6;
+                --expr-danger: #ef4444;
+                --expr-input-bg: #0b0e14;
+                --expr-radius: 12px;
                 display: flex;
                 flex-direction: column;
                 gap: 10px;
+                color-scheme: dark;
             }
             .expressions-panel,
             .configurator-panel,
             .configurator-editor-panel {
-                border: 1px solid rgb(55, 65, 81);
-                border-radius: 12px;
-                background: rgb(17, 24, 39);
+                border: 1px solid var(--expr-border);
+                border-radius: var(--expr-radius);
+                background: var(--expr-bg-elev);
                 padding: 10px;
+                box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
             }
             .configurator-panel,
             .configurator-editor-panel {
@@ -114,7 +125,7 @@ export class expressionsManager {
             .configurator-panel-title,
             .configurator-editor-title {
                 font-weight: 700;
-                color: rgb(243, 244, 246);
+                color: var(--expr-text);
             }
             .configurator-fields {
                 display: flex;
@@ -125,14 +136,14 @@ export class expressionsManager {
                 display: flex;
                 flex-direction: column;
                 gap: 6px;
-                border: 1px solid rgb(55, 65, 81);
+                border: 1px solid var(--expr-border);
                 border-radius: 10px;
                 padding: 10px;
-                background: rgba(15, 23, 42, 0.65);
+                background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0.01));
             }
             .configurator-field-label {
                 font-size: 12px;
-                color: rgb(209, 213, 219);
+                color: var(--expr-text);
                 font-weight: 600;
             }
             .configurator-control,
@@ -144,16 +155,33 @@ export class expressionsManager {
                 width: 100%;
                 box-sizing: border-box;
                 border-radius: 10px;
-                border: 1px solid rgb(75, 85, 99);
-                background: rgb(15, 23, 42);
-                color: rgb(243, 244, 246);
+                border: 1px solid var(--expr-border);
+                background: var(--expr-input-bg);
+                color: var(--expr-text);
                 padding: 8px 10px;
                 font-family: inherit;
+            }
+            .configurator-control::placeholder,
+            .configurator-editor-input::placeholder,
+            .configurator-editor-textarea::placeholder,
+            .expressions-textarea::placeholder {
+                color: var(--expr-muted);
+            }
+            .configurator-control:focus,
+            .configurator-select:focus,
+            .configurator-editor-input:focus,
+            .configurator-editor-select:focus,
+            .configurator-editor-textarea:focus,
+            .expressions-textarea:focus {
+                outline: none;
+                border-color: var(--expr-focus);
+                box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.18);
             }
             .configurator-control[type="range"] {
                 padding: 0;
                 border: none;
                 background: transparent;
+                box-shadow: none;
             }
             .configurator-slider-row {
                 display: grid;
@@ -176,29 +204,34 @@ export class expressionsManager {
             }
             .test-expressions-button,
             .configurator-button {
-                background: rgb(31, 41, 55);
-                color: rgb(249, 250, 251);
-                border: 1px solid rgb(55, 65, 81);
+                background: var(--expr-bg);
+                color: var(--expr-text);
+                border: 1px solid var(--expr-border);
                 padding: 6px 10px;
                 border-radius: 8px;
                 cursor: pointer;
                 font-weight: 700;
                 outline: none;
-                transition: background 120ms, transform 60ms, box-shadow 120ms;
+                transition: border-color 120ms, transform 60ms, box-shadow 120ms;
                 user-select: none;
                 box-shadow: none;
                 transform: none;
             }
             .test-expressions-button:hover,
             .configurator-button:hover {
-                background-color: rgb(55, 65, 81);
+                border-color: var(--expr-focus);
+                box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.18);
             }
             .configurator-button.secondary {
-                background: transparent;
+                background: var(--expr-bg);
             }
             .configurator-button.danger {
-                border-color: rgb(127, 29, 29);
-                color: rgb(254, 202, 202);
+                border-color: var(--expr-danger);
+                color: #fecaca;
+            }
+            .configurator-button.danger:hover {
+                border-color: var(--expr-danger);
+                box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.2);
             }
             .configurator-editor-list {
                 display: flex;
@@ -210,10 +243,10 @@ export class expressionsManager {
                 justify-content: center;
             }
             .configurator-editor-card {
-                border: 1px solid rgb(55, 65, 81);
+                border: 1px solid var(--expr-border);
                 border-radius: 10px;
                 padding: 10px;
-                background: rgba(15, 23, 42, 0.75);
+                background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0.01));
                 display: flex;
                 flex-direction: column;
                 gap: 10px;
@@ -227,7 +260,7 @@ export class expressionsManager {
             .configurator-editor-card-title {
                 font-size: 12px;
                 font-weight: 700;
-                color: rgb(209, 213, 219);
+                color: var(--expr-text);
             }
             .configurator-editor-grid {
                 display: grid;
@@ -241,7 +274,7 @@ export class expressionsManager {
             }
             .configurator-editor-label {
                 font-size: 12px;
-                color: rgb(156, 163, 175);
+                color: var(--expr-muted);
             }
             .configurator-editor-textarea {
                 min-height: 78px;
@@ -251,6 +284,7 @@ export class expressionsManager {
                 margin-top: 2px;
                 font-weight: 600;
                 min-height: 18px;
+                color: var(--expr-muted);
             }
         `;
         document.head.appendChild(style);
@@ -473,16 +507,24 @@ export class expressionsManager {
                 numberInput.value = rangeInput.value;
                 numberInput.disabled = disableControls;
 
-                const applyValue = (rawValue, commit = false) => {
+                const setPreviewValue = (rawValue) => {
                     const next = normalizeConfiguratorValue(field, rawValue);
                     rangeInput.value = String(next);
                     numberInput.value = String(next);
-                    this._updateConfiguratorValue(field, next, commit);
+                    return next;
                 };
 
-                rangeInput.addEventListener('input', () => applyValue(rangeInput.value, false));
-                rangeInput.addEventListener('change', () => applyValue(rangeInput.value, true));
-                bindCommitOnBlurOrEnter(numberInput, () => applyValue(numberInput.value, true));
+                rangeInput.addEventListener('input', () => {
+                    setPreviewValue(rangeInput.value);
+                });
+                rangeInput.addEventListener('change', () => {
+                    const next = setPreviewValue(rangeInput.value);
+                    this._updateConfiguratorValue(field, next, true);
+                });
+                bindCommitOnBlurOrEnter(numberInput, () => {
+                    const next = setPreviewValue(numberInput.value);
+                    this._updateConfiguratorValue(field, next, true);
+                });
 
                 sliderRow.appendChild(rangeInput);
                 sliderRow.appendChild(numberInput);
