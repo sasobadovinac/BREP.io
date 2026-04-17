@@ -538,6 +538,7 @@ class CadFrameApp {
     await this._viewer.partHistory.fromJSON(jsonText);
     await this._viewer.partHistory.runHistory();
     await this._viewer.partHistory.flushHistorySnapshot?.({ force: true });
+    try { this._viewer.expressionsManager?.refreshFromPartHistory?.(); } catch { }
   }
 
   async #loadModel(input) {

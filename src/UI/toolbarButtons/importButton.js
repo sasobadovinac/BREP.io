@@ -66,7 +66,7 @@ export function createImportButton(viewer) {
             await viewer?.partHistory?.reset?.();
             await viewer?.partHistory?.fromJSON?.(payload);
             // Sync Expressions UI with imported code
-            try { if (viewer?.expressionsManager?.textArea) viewer.expressionsManager.textArea.value = viewer.partHistory.expressions || ''; } catch {}
+            try { viewer?.expressionsManager?.refreshFromPartHistory?.(); } catch {}
             await viewer?.partHistory?.runHistory?.();
             try { viewer?.zoomToFit?.(1.1); } catch {}
             try { _updateCurrentNameFromFile(viewer, file); } catch {}
@@ -96,7 +96,7 @@ export function createImportButton(viewer) {
                 await viewer?.partHistory?.reset?.();
                 await viewer?.partHistory?.fromJSON?.(JSON.stringify(root));
                 // Sync Expressions UI with imported code
-                try { if (viewer?.expressionsManager?.textArea) viewer.expressionsManager.textArea.value = viewer.partHistory.expressions || ''; } catch {}
+                try { viewer?.expressionsManager?.refreshFromPartHistory?.(); } catch {}
 
                 // Refresh PMI views UI if it exists
                 try {

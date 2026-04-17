@@ -515,7 +515,7 @@ function attachDimLabelEvents(inst, el, c, world) {
       const input = String(v?.trim?.() ?? v);
       if (!input.length) return;
       const ph = inst?.viewer?.partHistory;
-      const exprSrc = ph?.expressions || '';
+      const exprSrc = ph?.getExpressionsSource?.() || ph?.expressions || '';
       const runExpr = (expressions, equation) => {
         try {
           const fn = `${expressions}; return ${equation} ;`;

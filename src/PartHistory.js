@@ -14,6 +14,10 @@ import { Sheet2DManager } from './sheets/Sheet2DManager.js';
 import { WireHarnessManager } from './wireHarness/WireHarnessManager.js';
 import { base64ToUint8Array, getComponentRecord } from './services/componentLibrary.js';
 import { deepClone } from './utils/deepClone.js';
+import {
+  createEmptyConfiguratorState,
+  normalizeConfiguratorState,
+} from './utils/configuratorUtils.js';
 import { sanitizeTransformValue } from './utils/transformReferenceUtils.js';
 import {
   getDefaultWorkbenchForNewPart,
@@ -72,6 +76,7 @@ export class PartHistory {
     this.currentHistoryStepId = null;
     this.runningFeatureId = null;
     this.expressions = DEFAULT_EXPRESSIONS;
+    this.configurator = createEmptyConfiguratorState();
     this.activeWorkbench = getDefaultWorkbenchForNewPart();
     this.pmiViewsManager = new PMIViewsManager(this);
     this.sheet2DManager = new Sheet2DManager(this);
@@ -379,8 +384,7 @@ export class PartHistory {
     return hiddenKeyCounts;
   }
 
-  static evaluateExpression(expressionsSource, equation) {
-    const exprSource = PartHistory.buildExpressionSource(expressionsSource);
+  static evaluateExpressionSource(exprSource, equation) {
     const fnBody = `${exprSource}; return ${equation} ;`;
     try {
       let result = Function(fnBody)();
@@ -397,24 +401,43 @@ export class PartHistory {
     }
   }
 
-  evaluateExpression(equation) {
-    return PartHistory.evaluateExpression(this.expressions, equation);
+  static evaluateExpression(expressionsSource, equation, configuratorState = null) {
+    const exprSource = PartHistory.buildExpressionSource(expressionsSource, configuratorState);
+    return PartHistory.evaluateExpressionSource(exprSource, equation);
   }
 
-  static buildExpressionSource(expressionsSource) {
+  evaluateExpression(equation) {
+    return PartHistory.evaluateExpressionSource(this.getExpressionsSource(), equation);
+  }
+
+  static buildConfiguratorPrelude(configuratorState = null) {
+    const normalized = normalizeConfiguratorState(configuratorState);
+    return `configurator = ${JSON.stringify(normalized.values)};`;
+  }
+
+  static buildExpressionSource(expressionsSource, configuratorState = null) {
     const exprSource = typeof expressionsSource === 'string' ? expressionsSource : '';
-    if (!exprSource.trim()) return DEFAULT_EXPRESSION_PRELUDE;
+    const prelude = `${DEFAULT_EXPRESSION_PRELUDE}\n${PartHistory.buildConfiguratorPrelude(configuratorState)}`;
+    if (!exprSource.trim()) return prelude;
     // Provide a default resolution before the user script runs; users can
     // overwrite it later with `resolution = ...` in their own expressions.
-    return `${DEFAULT_EXPRESSION_PRELUDE}\n${exprSource}`;
+    return `${prelude}\n${exprSource}`;
   }
 
   buildExpressionSource(expressionsSource = this.expressions) {
-    return PartHistory.buildExpressionSource(expressionsSource);
+    return PartHistory.buildExpressionSource(expressionsSource, this.configurator);
   }
 
   getExpressionsSource() {
     return this.buildExpressionSource(this.expressions);
+  }
+
+  getConfiguratorState() {
+    return normalizeConfiguratorState(this.configurator);
+  }
+
+  getConfiguratorValues() {
+    return this.getConfiguratorState().values;
   }
 
   getModelRevision() {
@@ -461,6 +484,7 @@ export class PartHistory {
     this.sheet2DManager.reset();
     this.wireHarnessManager.reset();
     this.expressions = DEFAULT_EXPRESSIONS;
+    this.configurator = createEmptyConfiguratorState();
     this.activeWorkbench = getDefaultWorkbenchForNewPart();
     // Reset MetadataManager
     this.metadataManager = new MetadataManager();
@@ -1167,6 +1191,7 @@ export class PartHistory {
       features,
       idCounter: this.idCounter,
       expressions: this.expressions,
+      configurator: this.getConfiguratorState(),
       activeWorkbench: normalizeWorkbenchId(this.activeWorkbench, getDefaultWorkbenchForNewPart()),
       pmiViews,
       sheets2D,
@@ -1191,6 +1216,7 @@ export class PartHistory {
     this.features = this.#prepareFeatureList(rawFeatures);
     this.idCounter = importData.idCounter;
     this.expressions = importData.expressions || "";
+    this.configurator = normalizeConfiguratorState(importData.configurator);
     this.activeWorkbench = Object.prototype.hasOwnProperty.call(importData, 'activeWorkbench')
       ? normalizeWorkbenchId(importData.activeWorkbench, getLegacyLoadWorkbenchDefault())
       : getLegacyLoadWorkbenchDefault();
@@ -1604,8 +1630,8 @@ export class PartHistory {
     const exprMap = (inputParams && typeof inputParams === 'object' && inputParams.__expr && typeof inputParams.__expr === 'object' && !Array.isArray(inputParams.__expr))
       ? inputParams.__expr
       : null;
+    const exprSource = this.getExpressionsSource();
     const evalExpression = (equation) => {
-      const exprSource = this.getExpressionsSource();
       const fnBody = `${exprSource}; return ${equation} ;`;
       try {
         let result = Function(fnBody)();
@@ -1617,6 +1643,17 @@ export class PartHistory {
       } catch {
         return { ok: false, value: null };
       }
+    };
+    const evaluateNumericValue = (value) => {
+      if (typeof value === 'number' && Number.isFinite(value)) return value;
+      if (typeof value === 'string' && value.trim().length) {
+        const result = PartHistory.evaluateExpressionSource(exprSource, value);
+        if (typeof result === 'number' && Number.isFinite(result)) return result;
+        const numericFromResult = Number(result);
+        if (Number.isFinite(numericFromResult)) return numericFromResult;
+      }
+      const fallback = Number(value);
+      return Number.isFinite(fallback) ? fallback : 0;
     };
 
     for (const key in schema) {
@@ -1641,9 +1678,9 @@ export class PartHistory {
             const num = Number(rawValue);
             sanitized[key] = Number.isFinite(num)
               ? num
-              : PartHistory.evaluateExpression(this.expressions, inputParams[key]);
+              : evaluateNumericValue(inputParams[key]);
           } else {
-            sanitized[key] = PartHistory.evaluateExpression(this.expressions, inputParams[key]);
+            sanitized[key] = evaluateNumericValue(inputParams[key]);
           }
         } else if (schema[key].type === "string" && hasExpr && exprOk) {
           if (exprValue == null) sanitized[key] = '';
@@ -1714,7 +1751,7 @@ export class PartHistory {
           const raw = rawValue || {};
           const evalOne = (v) => {
             if (typeof v === 'number' && Number.isFinite(v)) return v;
-            if (typeof v === 'string') return PartHistory.evaluateExpression(this.expressions, v);
+            if (typeof v === 'string') return evaluateNumericValue(v);
             const n = Number(v);
             return Number.isFinite(n) ? n : 0;
           };
@@ -1732,7 +1769,7 @@ export class PartHistory {
           const raw = rawValue;
           const evalOne = (v) => {
             if (typeof v === 'number' && Number.isFinite(v)) return v;
-            if (typeof v === 'string') return PartHistory.evaluateExpression(this.expressions, v);
+            if (typeof v === 'string') return evaluateNumericValue(v);
             const n = Number(v);
             return Number.isFinite(n) ? n : 0;
           };

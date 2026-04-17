@@ -59,16 +59,19 @@ function stringifyAsCodeLiteral(value, indent = 4) {
 
 async function loadSerializableHistory(partHistory) {
   if (!partHistory || typeof partHistory.toJSON !== 'function') {
-    return { features: [], expressions: '' };
+    return { features: [], expressions: '', configurator: null };
   }
   const json = await partHistory.toJSON();
   const parsed = JSON.parse(json || '{}');
   const features = Array.isArray(parsed?.features) ? parsed.features : [];
   const expressions = typeof parsed?.expressions === 'string' ? parsed.expressions : '';
-  return { features, expressions };
+  const configurator = (parsed?.configurator && typeof parsed.configurator === 'object' && !Array.isArray(parsed.configurator))
+    ? parsed.configurator
+    : null;
+  return { features, expressions, configurator };
 }
 
-function buildTestSnippet({ functionName, features, expressions }) {
+function buildTestSnippet({ functionName, features, expressions, configurator }) {
   const safeFunctionName = sanitizeFunctionName(functionName) || 'test_generated_history';
   const list = Array.isArray(features) ? features : [];
   const lines = [];
@@ -79,6 +82,9 @@ function buildTestSnippet({ functionName, features, expressions }) {
 
   if (typeof expressions === 'string' && expressions.trim().length > 0 && expressions !== DEFAULT_EXPRESSIONS) {
     lines.push(`  partHistory.expressions =${stringifyAsCodeLiteral(expressions, 4)};`);
+  }
+  if (configurator && typeof configurator === 'object') {
+    lines.push(`  partHistory.configurator =${stringifyAsCodeLiteral(configurator, 4)};`);
   }
 
   if (!list.length) {
@@ -265,6 +271,7 @@ export function createHistoryTestSnippetButton(viewer) {
           functionName,
           features: snapshot.features,
           expressions: snapshot.expressions,
+          configurator: snapshot.configurator,
         });
         const copied = await copyTextToClipboard(snippet);
         try { window.__generatedHistoryTestSnippet = snippet; } catch { /* ignore */ }

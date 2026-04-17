@@ -726,9 +726,17 @@ export class HistoryWidget extends HistoryCollectionWidget {
   }
 
   #computeExpressionsSig() {
-    const expr = this.partHistory?.expressions;
-    if (expr == null) return '';
-    return String(expr);
+    try {
+      const expr = this.partHistory?.expressions;
+      const configurator = this.partHistory?.getConfiguratorState?.() || this.partHistory?.configurator || null;
+      return JSON.stringify({
+        expressions: expr == null ? '' : String(expr),
+        configurator,
+      });
+    } catch {
+      const expr = this.partHistory?.expressions;
+      return expr == null ? '' : String(expr);
+    }
   }
 
   #entryId(entry) {

@@ -602,7 +602,7 @@ export class SketchFeature {
 
         // Evaluate any expression-backed values on points/constraints using global expressions
         try {
-            const exprSrc = partHistory?.expressions || '';
+            const exprSrc = partHistory?.getExpressionsSource?.() || partHistory?.expressions || '';
             let expressionDrivenValueChanged = false;
             const runExpr = (expressions, equation) => {
                 try {

@@ -102,6 +102,7 @@ import {
     test_cppNative_prepareManifoldMesh_matches_legacy_js_reference,
     test_fillet_face_names_and_merge_metadata_survive_native_manifold_rebuild,
 } from './test_cppFaceNamingRegression.js';
+import { test_configurator_expressions } from './test_configuratorExpressions.js';
 import {
     test_cppSolidCore_boundaryQueries_match_geometric_edges_on_split_authoring_mesh,
     test_cppSolidCore_offsetFace_moves_vertices_for_face,
@@ -293,6 +294,7 @@ export const testFunctions = [
     { test: test_cppPrimitive_cone_preserves_expected_face_labels_and_metadata, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     { test: test_cppPrimitive_torus_and_pyramid_preserve_face_labels, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     { test: test_cppPrimitive_sphere_preserves_single_face_label, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_configurator_expressions, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     { test: test_manifoldPlus_sum, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     { test: test_plane, printArtifacts: false, exportFaces: true, exportSolids: true, resetHistory: true },
     { test: test_primitiveCube, printArtifacts: false, exportFaces: true, exportSolids: true, resetHistory: true },

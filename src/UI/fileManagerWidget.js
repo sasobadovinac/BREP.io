@@ -1499,7 +1499,7 @@ export class FileManagerWidget {
           if (root) {
             await this.viewer.partHistory.fromJSON(JSON.stringify(root));
             // Sync Expressions UI with imported code
-            try { if (this.viewer?.expressionsManager?.textArea) this.viewer.expressionsManager.textArea.value = this.viewer.partHistory.expressions || ''; } catch { }
+            try { this.viewer?.expressionsManager?.refreshFromPartHistory?.(); } catch { }
 
             // Refresh PMI views widget from PartHistory
             try {
@@ -1542,7 +1542,7 @@ export class FileManagerWidget {
       const payload = (typeof rec.data === 'string') ? rec.data : JSON.stringify(rec.data);
       await this.viewer.partHistory.fromJSON(payload);
       // Sync Expressions UI with imported code
-      try { if (this.viewer?.expressionsManager?.textArea) this.viewer.expressionsManager.textArea.value = this.viewer.partHistory.expressions || ''; } catch { }
+      try { this.viewer?.expressionsManager?.refreshFromPartHistory?.(); } catch { }
     } catch (e) {
       alert('Failed to load model (invalid data).');
       console.error(e);

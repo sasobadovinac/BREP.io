@@ -2085,9 +2085,7 @@ export class Viewer {
 
     _syncHistoryUiAfterUndoRedo() {
         try {
-            if (this.expressionsManager?.textArea) {
-                this.expressionsManager.textArea.value = this.partHistory?.expressions || '';
-            }
+            this.expressionsManager?.refreshFromPartHistory?.();
         } catch { }
         try {
             if (this.pmiViewsWidget) {
