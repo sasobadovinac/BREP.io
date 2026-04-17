@@ -10,6 +10,7 @@ import { prepareSketchScreenshot } from './capture/docsShots/sketchScreenshot.js
 import { preparePmiScreenshot } from './capture/docsShots/pmiScreenshot.js';
 import { prepareNurbsCageScreenshot } from './capture/docsShots/nurbsCageScreenshot.js';
 import { prepareSheetScreenshot } from './capture/docsShots/sheetScreenshot.js';
+import { prepareExpressionsScreenshot } from './capture/docsShots/expressionsScreenshot.js';
 
 const require = createRequire(import.meta.url);
 const DEFAULT_BASE_URL = process.env.CAPTURE_BASE_URL || 'http://127.0.0.1:5173';
@@ -37,6 +38,24 @@ const DOC_SHOTS = [
     id: 'modeling',
     label: 'Modeling mode',
     relativePath: join('docs', 'MODELING.png'),
+  },
+  {
+    id: 'expressions-panel',
+    label: 'Expressions panel',
+    relativePath: join('docs', 'expressions-panel.png'),
+    selector: '#accordion-content-Expressions .expressions-panel',
+  },
+  {
+    id: 'configurator-editor',
+    label: 'Configurator editor',
+    relativePath: join('docs', 'configurator-editor.png'),
+    selector: '#accordion-content-Expressions .configurator-editor-panel',
+  },
+  {
+    id: 'configurator-field-types',
+    label: 'Configurator field types',
+    relativePath: join('docs', 'configurator-field-types.png'),
+    selector: '#accordion-content-Expressions .configurator-panel',
   },
   {
     id: 'sketch',
@@ -648,6 +667,12 @@ async function waitForCadReady(page) {
 async function prepareDocsShot(page, shotId, context = {}) {
   if (shotId === 'modeling') {
     await prepareModelingScreenshot(page);
+    return;
+  }
+  if (shotId === 'expressions-panel'
+    || shotId === 'configurator-editor'
+    || shotId === 'configurator-field-types') {
+    await prepareExpressionsScreenshot(page, shotId);
     return;
   }
   if (shotId === 'sketch') {

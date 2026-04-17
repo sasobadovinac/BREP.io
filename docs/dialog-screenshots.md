@@ -9,6 +9,7 @@
    - `docs/pmi-annotations` (PMI annotations)
    - `docs/assembly-constraints` (assembly constraints)
    - `docs/MODELING.png`, `docs/SKETCH.png`, `docs/PMI.png`
+   - `docs/expressions-panel.png`, `docs/configurator-editor.png`, `docs/configurator-field-types.png`
    - `docs/features/image-to-face-2D_dialog.png`, `docs/features/image-to-face-3D_dialog.png`
    - `docs/features/NURBS_Face_Solid_cage_editor.png`
    - Full-page documentation captures use a fixed viewport (`1200x760`) for consistent, smaller image size.

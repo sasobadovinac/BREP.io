@@ -1,138 +1,145 @@
 # Expressions and Configurator
 
-This page is the dedicated guide for the Expressions panel in Modeling Mode.
+Use the Expressions panel when you want a model to be driven by a few reusable values instead of typing raw numbers into every feature.
+
+The panel has two parts:
+
+- `Expressions`: a shared place to define variables and formulas
+- `Configurator`: optional UI controls that expose a few important values as sliders, number fields, dropdowns, or text inputs
+
+This is most useful when you want to build a part once, then resize or retune it quickly.
 
 ## Live Demos
 - Examples hub: [https://BREP.io/apiExamples/index.html](https://BREP.io/apiExamples/index.html)
 - Embeded CAD: [https://BREP.io/apiExamples/Embeded_CAD.html](https://BREP.io/apiExamples/Embeded_CAD.html)
 
-## Overview
+## Expressions Panel
 
-The Expressions panel has two related parts:
+Write variables in the Expressions box, then reference those variable names in feature dialog inputs.
 
-- `expressions`: a shared script where you define variables and formulas
-- `configurator`: a set of UI widgets whose values are exposed to expressions as `configurator.fieldName`
+![Expressions panel](./expressions-panel.png)
 
-Together, they let you drive feature dialogs from reusable parameters instead of hard-coded values.
-
-## Expression syntax
-
-Expressions use JavaScript-style syntax. Typical usage is to assign variables in the script, then reference them in feature fields.
-
-Example script:
+Example:
 
 ```js
 wall = 2;
 width = 80;
-height = width * 1.5;
-holeOffset = width * 0.25;
+height = width * 0.6;
+innerWidth = width - wall * 2;
 ```
 
-Then in a feature dialog field:
+Then in a feature dialog you can enter values such as:
+
+```js
+width
+```
 
 ```js
 height
 ```
-
-or:
 
 ```js
 width - wall * 2
 ```
 
-## Runtime context
+## Quick Start
 
-When an expression is evaluated, the runtime includes:
+1. Open the `Expressions` panel in Modeling Mode.
+2. Add a few variables in the main text area.
+3. Click `Test Expressions`.
+4. In feature dialogs, enter those variable names instead of fixed numbers.
+5. Change the variables later to update the model.
 
-- `resolution = 32` by default
-- the current configurator values as `configurator`
-- the contents of the Expressions script
-
-That means these are valid:
-
-```js
-resolution
-configurator.panelWidth
-configurator.materialName
-```
+This lets you control repeated dimensions from one place.
 
 ## Configurator
 
-The configurator is for values that should be edited through UI controls instead of typing directly into the script.
+The configurator is for values that should be adjusted through UI controls instead of editing the script directly.
+
+If no configurator widgets exist, the configurator form stays hidden.
+
+When widgets do exist, the form appears above the Expressions editor.
+
+![Configurator field types](./configurator-field-types.png)
 
 Supported widget types:
 
-- `slider`
-- `number`
-- `select`
-- `string`
+- `slider`: best for bounded numeric values you want to drag
+- `number`: best for precise numeric entry
+- `select`: best for choosing from a small list of options
+- `string`: best for names, labels, and other text values
 
-Example configurator usage:
+Configurator values are available inside expressions as:
 
 ```js
-width = configurator.panelWidth;
-height = width * 2;
+configurator.fieldName
+```
+
+Example:
+
+```js
+panelWidth = configurator.panelWidth;
+finish = configurator.finish;
 labelText = configurator.partLabel;
 ```
 
-Then feature inputs can use:
+You do not need to create an intermediate variable first. In many cases you can enter the configurator value directly in a feature dialog input, for example:
 
 ```js
-width
-height
-labelText
-configurator.panelWidth * 0.5
-```
-
-## Expressions panel behavior
-
-- If no configurator fields exist, the configurator form is hidden.
-- If configurator fields exist, the live configurator form appears above the expression editor.
-- Editing a configurator value in that live form re-runs the model.
-- Editing the configurator layout with `Edit Configurator` shows a live preview of the widget set above the expression editor.
-- While the configurator editor is open, that preview does not re-run the model.
-- The model is re-evaluated only when the configurator edit session is committed with `Save Configurator` or by closing the editor.
-
-## Using expressions in feature dialogs
-
-Feature dialogs evaluate against the shared expression source.
-
-Field support:
-
-- `number` fields support expressions by default
-- `string` fields can support expressions when the schema enables `allowExpression: true`
-- `transform` and `vec3` numeric entries also evaluate expressions
-
-Examples:
-
-```js
-distance = configurator.panelWidth * 0.5
+configurator.panelWidth
 ```
 
 ```js
-text = configurator.partLabel
+configurator.partLabel
 ```
 
-## Persistence
+## Editing the Configurator
 
-Both the script and the configurator are stored in part history.
+Click `Edit Configurator` below the Expressions area to add or change widgets.
 
-Saved part history includes:
+![Configurator editor](./configurator-editor.png)
 
-- `expressions`
-- `configurator.fields`
-- `configurator.values`
+Typical setup:
 
-That means they survive:
+1. Click `Edit Configurator`.
+2. Click `Add Widget`.
+3. Set the `Field Name`.
+4. Choose the widget `Type`.
+5. Set the default value and any limits or options.
+6. Click `Save Configurator`.
 
-- save/load
-- JSON export/import
-- embedded feature history in 3MF
-- undo/redo snapshots
+After saving, the live configurator form appears above the Expressions editor.
 
-## Practical example
+## Naming Rules
 
-Expressions script:
+Each widget needs a field name that can be referenced from expressions.
+
+Good examples:
+
+- `panelWidth`
+- `rib_count`
+- `partLabel`
+
+Avoid spaces and punctuation in field names. Use letters, numbers, `_`, and `$`.
+
+## How Editing Behaves
+
+- Changing a value in the live configurator form re-runs the model.
+- Text and number inputs apply when you press `Enter` or leave the field.
+- Slider drags update live.
+- While `Edit Configurator` is open, the preview above updates as you add or remove widgets.
+- That preview does not re-run the model until you save or close the configurator editor.
+
+## Practical Example
+
+Create these configurator fields:
+
+- `panelWidth` as a slider
+- `panelHeight` as a number field
+- `finish` as a select
+- `label` as a string
+
+Then write expressions like:
 
 ```js
 wall = 2;
@@ -143,43 +150,41 @@ innerHeight = outerHeight - wall * 2;
 titleText = configurator.label;
 ```
 
-Possible configurator fields:
-
-- `panelWidth` as a slider
-- `panelHeight` as a slider
-- `label` as a string
-
-Then feature inputs can use:
+Now feature dialogs can use:
 
 ```js
 outerWidth
-outerHeight
 innerWidth
-innerHeight
 titleText
 ```
 
-## Developer notes
+That gives you one place to control the whole part.
 
-Relevant API and integration points:
+## Where You Can Use Expressions
 
-- `partHistory.expressions`
-- `partHistory.configurator`
-- `partHistory.getExpressionsSource()`
-- `partHistory.buildExpressionSource()`
-- `partHistory.evaluateExpression()`
+Expressions are mainly intended for feature dialog inputs.
 
-If you are authoring a feature dialog schema:
+Common cases:
 
-- use `type: 'number'` for expression-capable numeric fields
-- use `type: 'string'` with `allowExpression: true` for expression-capable string fields
+- numeric fields
+- transform values
+- vector component fields
+- some text fields
 
-## Safety note
+If a feature dialog supports expressions, you can enter either a direct value like `20` or an expression like `width * 0.5`.
 
-Expressions are executed as code using `Function()`. Do not evaluate untrusted user input.
+You can also enter configurator values directly, such as `configurator.panelWidth`, without first defining a separate variable in the Expressions editor.
 
-## Related docs
+## Saved With the Part
+
+Expressions and configurator values are stored in part history, so they stay with the model through:
+
+- save and load
+- JSON export and import
+- undo and redo
+- embedded history in exported files that preserve feature history
+
+## Related Docs
 
 - [Modeling Mode](./modes/modeling.md)
-- [Input Params Schema](./input-params-schema.md)
-- [PartHistory Reference](./part-history.md)
+- [Part History](./part-history.md)
