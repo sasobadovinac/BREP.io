@@ -1,7 +1,4 @@
 import {
-    clearFilletCaches,
-} from "../../BREP/fillets/fillet.js";
-import {
     collectEdgesFromSelection,
     getSolidGeometryCounts,
     resolveSingleSolidFromEdges,
@@ -66,11 +63,6 @@ const inputParamsSchema = {
         ],
         default_value: DEBUG_MODE_NONE,
         hint: "Controls which fillet debug solids are emitted.",
-    },
-    showTangentOverlays: {
-        type: "boolean",
-        default_value: false,
-        hint: "Show pre-inflate tangent overlays on the fillet tube",
     },
 };
 
@@ -248,13 +240,11 @@ export class FilletFeature {
             resolution: this.inputParams?.resolution,
             inflate: this.inputParams?.inflate,
             nudgeFaceDistance: this.inputParams?.nudgeFaceDistance,
-            showTangentOverlays: this.inputParams?.showTangentOverlays,
             debug: debugEnabled,
             debugMode,
             debugSolidsLevel: configuredDebugLevel,
             debugShowCombinedBeforeTarget,
         });
-        try { clearFilletCaches(); } catch { }
         const added = [];
         const removed = [];
 
@@ -343,7 +333,6 @@ export class FilletFeature {
             debug: debugEnabled,
             debugSolidsLevel: configuredDebugLevel,
             debugShowCombinedBeforeTarget,
-            showTangentOverlays: !!this.inputParams.showTangentOverlays,
         });
         const collectDebugSolids = (res) => {
             const out = [];

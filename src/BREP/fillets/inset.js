@@ -137,25 +137,6 @@ function getCachedSpatialIndex(faceData, faceKey = null) {
   return idx;
 }
 
-function clearFilletCaches() {
-  __FACE_DATA_CACHE.clear();
-  __SPATIAL_INDEX_CACHE.clear();
-}
-
-function trimFilletCaches() {
-  if (__FACE_DATA_CACHE.size > MAX_CACHE_SIZE * 2) {
-    let count = 0;
-    const toDrop = [];
-    for (const k of __FACE_DATA_CACHE.keys()) {
-      if (count++ > MAX_CACHE_SIZE) toDrop.push(k);
-    }
-    for (const k of toDrop) {
-      __FACE_DATA_CACHE.delete(k);
-      __SPATIAL_INDEX_CACHE.delete(k);
-    }
-  }
-}
-
 function clamp(x, a, b) { return Math.max(a, Math.min(b, x)); }
 function isFiniteVec3(v) { return Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z); }
 
@@ -377,8 +358,6 @@ export {
   getAngleTolerance,
   getCachedFaceDataForTris,
   getCachedSpatialIndex,
-  clearFilletCaches,
-  trimFilletCaches,
   clamp,
   isFiniteVec3,
   projectPointOntoFaceTriangles,
@@ -386,4 +365,3 @@ export {
   averageFaceNormalObjectSpace,
   localFaceNormalAtPoint,
 };
-

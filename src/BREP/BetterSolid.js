@@ -686,7 +686,6 @@ export class Solid extends THREE.Group {
      * @param {'AUTO'|'INSET'|'OUTSET'|string} [options.direction='AUTO'] per-edge auto classification (or forced side)
      * @param {number} [options.inflate=0.1] tube inflation for cutting/union
      * @param {number} [options.resolution=32] tube resolution (segments around circumference)
-     * @param {boolean} [options.showTangentOverlays=false] overlay tangency polylines on the helper tube for debugging/PMI
      * @param {boolean} [options.debug=false] enable builder debug aids
      * @param {string} [options.featureID='FILLET'] name prefix for generated solids
      * @returns {Promise<Solid>}

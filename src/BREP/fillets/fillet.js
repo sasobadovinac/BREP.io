@@ -7,8 +7,6 @@ import {
 import { manifold } from "../setupManifold.js";
 import { getDistanceTolerance } from './inset.js';
 
-export { clearFilletCaches, trimFilletCaches } from './inset.js';
-
 function solidFromSnapshot(snapshot, name, opts = {}) {
     if (!snapshot) return null;
     const solid = new Solid();
