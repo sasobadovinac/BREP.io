@@ -1,5 +1,8 @@
 import { Solid } from "../BREP/BetterSolid.js";
-import { __testOnlyMergeCoplanarAdjacentFilletEndCaps } from "../BREP/SolidMethods/fillet.js";
+import {
+    __testOnlyMergeCoplanarAdjacentFilletEndCaps,
+    __testOnlyReassignTinyFilletSidewallSliverTriangles,
+} from "../BREP/SolidMethods/fillet.js";
 import {
     applySolidAuthoringStateSnapshot,
     buildSolidAuthoringStateSnapshot,
@@ -548,6 +551,45 @@ export async function test_cppSolidNative_mergeCoplanarAdjacentFilletEndCaps_ret
     }
     if (topMetadata.filletEndCap === true) {
         throw new Error("Expected merged target face metadata to exclude filletEndCap.");
+    }
+}
+
+export async function test_cppSolidNative_reassignTinyFilletSidewallSliverTriangles_merges_triangle_whose_vertices_lie_on_single_planar_face_boundary() {
+    const solid = new Solid();
+    solid
+        .addTriangle("MAIN", [0, 0, 0], [2, 0, 0], [2, 2, 0])
+        .addTriangle("MAIN", [0, 0, 0], [2, 2, 0], [0, 2, 0])
+        .addTriangle("SLIVER", [0.0001, 0, 0], [0.0002, 0, 0], [0, 0.0001, 0]);
+
+    solid.setFaceMetadata("MAIN", { marker: "main-face", sourceFeatureId: "BASE" });
+    solid.setFaceMetadata("SLIVER", {
+        filletSideWall: true,
+        filletRoundFace: "F_TEST_TUBE_Outer",
+        sourceFeatureId: "F_TEST",
+    });
+
+    const summary = __testOnlyReassignTinyFilletSidewallSliverTriangles(solid, { featureID: "F_TEST" });
+    if (Number(summary?.reassignedTriangles || 0) !== 1) {
+        throw new Error(`Expected one boundary-hosted sliver triangle to merge into MAIN, received ${summary?.reassignedTriangles}.`);
+    }
+
+    const faceNames = new Set(solid.getFaceNames?.() || []);
+    if (!faceNames.has("MAIN")) {
+        throw new Error("Expected MAIN to survive sliver-triangle reassignment.");
+    }
+    if (faceNames.has("SLIVER")) {
+        throw new Error("Expected SLIVER face to be pruned after reassignment into MAIN.");
+    }
+
+    const mainFaceID = solid._faceNameToID.get("MAIN");
+    const mainTriangleCount = Array.from(solid._triIDs || []).filter((triID) => triID === mainFaceID).length;
+    if (mainTriangleCount !== 3) {
+        throw new Error(`Expected MAIN to own 3 triangles after sliver reassignment, received ${mainTriangleCount}.`);
+    }
+
+    const metadata = solid.getFaceMetadata("MAIN") || {};
+    if (metadata.marker !== "main-face" || metadata.sourceFeatureId !== "BASE") {
+        throw new Error("Expected MAIN metadata to survive sliver-triangle reassignment.");
     }
 }
 

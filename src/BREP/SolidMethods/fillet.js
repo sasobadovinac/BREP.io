@@ -1139,6 +1139,80 @@ function pointDistanceToLine3D(point, lineOrigin, lineDirection) {
   return Math.hypot(rx, ry, rz);
 }
 
+function pointDistanceToSegment3D(point, segmentA, segmentB) {
+  const p = toPoint3Object(point);
+  const a = toPoint3Object(segmentA);
+  const b = toPoint3Object(segmentB);
+  if (!p || !a || !b) return Infinity;
+
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const abz = b.z - a.z;
+  const abLenSq = (abx * abx) + (aby * aby) + (abz * abz);
+  if (!(abLenSq > 1e-18)) {
+    return Math.hypot(
+      p.x - a.x,
+      p.y - a.y,
+      p.z - a.z,
+    );
+  }
+
+  const apx = p.x - a.x;
+  const apy = p.y - a.y;
+  const apz = p.z - a.z;
+  const t = Math.max(0, Math.min(1, (
+    (apx * abx)
+    + (apy * aby)
+    + (apz * abz)
+  ) / abLenSq));
+  const closestX = a.x + (abx * t);
+  const closestY = a.y + (aby * t);
+  const closestZ = a.z + (abz * t);
+  return Math.hypot(
+    p.x - closestX,
+    p.y - closestY,
+    p.z - closestZ,
+  );
+}
+
+function measureTrianglePointsOnBoundarySegments(points, boundarySegments, {
+  distanceTolerance = 1e-4,
+} = {}) {
+  const pts = Array.isArray(points) ? points : [];
+  const segments = Array.isArray(boundarySegments) ? boundarySegments : [];
+  const tol = Math.max(1e-7, Math.abs(Number(distanceTolerance) || 0));
+  if (pts.length === 0 || segments.length === 0) return null;
+
+  let maxDistance = 0;
+  let totalDistance = 0;
+  const matchedSegmentIndices = [];
+  for (const point of pts) {
+    let bestDistance = Infinity;
+    let bestSegmentIndex = -1;
+    for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex++) {
+      const segment = segments[segmentIndex];
+      const distance = pointDistanceToSegment3D(point, segment?.a, segment?.b);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestSegmentIndex = segmentIndex;
+      }
+    }
+    if (!(bestDistance <= tol) || bestSegmentIndex < 0) {
+      return null;
+    }
+    totalDistance += bestDistance;
+    if (bestDistance > maxDistance) maxDistance = bestDistance;
+    matchedSegmentIndices.push(bestSegmentIndex);
+  }
+
+  return {
+    pointCount: pts.length,
+    distinctSegmentCount: new Set(matchedSegmentIndices).size,
+    maxDistance,
+    totalDistance,
+  };
+}
+
 function sharedCollinearSegmentLength3D(segmentA, segmentB, {
   matchTolerance = 1e-4,
   directionTolerance = 2e-3,
@@ -1691,6 +1765,33 @@ function computeTriangleGeometryFromAuthoringState(vertProperties, triVerts, tri
   };
 }
 
+function buildFaceTriangleMapFromAuthoringState(vertProperties, triVerts, triIDs, idToFaceName) {
+  const faceTriangles = new Map();
+  const tv = Array.isArray(triVerts) ? triVerts : [];
+  const vp = Array.isArray(vertProperties) ? vertProperties : [];
+  const ids = Array.isArray(triIDs) ? triIDs : [];
+  const idToFace = idToFaceName instanceof Map ? idToFaceName : null;
+  if (!idToFace) return faceTriangles;
+
+  const triCount = Math.min(ids.length, (tv.length / 3) | 0);
+  for (let triIndex = 0; triIndex < triCount; triIndex++) {
+    const faceName = String(idToFace.get(ids[triIndex] >>> 0) || '').trim();
+    if (!faceName) continue;
+    const geometry = computeTriangleGeometryFromAuthoringState(vp, tv, triIndex);
+    let tris = faceTriangles.get(faceName);
+    if (!tris) {
+      tris = [];
+      faceTriangles.set(faceName, tris);
+    }
+    tris.push({
+      p1: [geometry.points[0].x, geometry.points[0].y, geometry.points[0].z],
+      p2: [geometry.points[1].x, geometry.points[1].y, geometry.points[1].z],
+      p3: [geometry.points[2].x, geometry.points[2].y, geometry.points[2].z],
+    });
+  }
+  return faceTriangles;
+}
+
 function pruneUnusedFaceLabelsFromTriangles(solid) {
   const ids = Array.isArray(solid?._triIDs) ? solid._triIDs : null;
   const faceToId = solid?._faceNameToID instanceof Map ? solid._faceNameToID : null;
@@ -1729,19 +1830,15 @@ function reassignTinyFilletSidewallSliverTriangles(solid, opts = {}) {
   const solidTol = deriveSolidToleranceFromVerts(solid, 1e-5);
   const sliverHeightTolerance = Math.max(solidTol * 4, 2e-4);
   const planeDistanceTolerance = Math.max(sliverHeightTolerance * 2, 3e-4);
+  const boundaryDistanceTolerance = Math.max(sliverHeightTolerance * 1.5, 3e-4);
   const analysisPointTolerance = Math.max(planeDistanceTolerance * 0.5, 1e-6);
   const planarityTolerance = Math.max(planeDistanceTolerance * 2, 5e-4);
 
-  const faceEntries = (typeof solid.getFaces === 'function') ? (solid.getFaces(false) || []) : [];
-  const faceTriangles = new Map();
-  for (const entry of faceEntries) {
-    const faceName = String(entry?.faceName || '').trim();
-    if (!faceName) continue;
-    faceTriangles.set(faceName, Array.isArray(entry?.triangles) ? entry.triangles : []);
-  }
+  const faceTriangles = buildFaceTriangleMapFromAuthoringState(vp, tv, ids, idToFace);
 
   const faceAnalysisCache = new Map();
   const faceAreaCache = new Map();
+  const boundarySegmentsCache = new Map();
   const getFaceAnalysis = (faceName) => {
     if (faceAnalysisCache.has(faceName)) return faceAnalysisCache.get(faceName);
     const analysis = analyzePlanarFaceTriangles(faceTriangles.get(faceName), {
@@ -1758,6 +1855,17 @@ function reassignTinyFilletSidewallSliverTriangles(solid, opts = {}) {
     faceAreaCache.set(faceName, area);
     return area;
   };
+  const getBoundarySegments = (faceName) => {
+    if (boundarySegmentsCache.has(faceName)) return boundarySegmentsCache.get(faceName);
+    const segments = buildBoundarySegmentsFromFaceTriangles(faceTriangles.get(faceName), {
+      pointTolerance: analysisPointTolerance,
+    });
+    boundarySegmentsCache.set(faceName, Array.isArray(segments) ? segments : []);
+    return boundarySegmentsCache.get(faceName);
+  };
+  const candidateFaceNames = Array.from(faceTriangles.keys())
+    .map((faceName) => String(faceName || '').trim())
+    .filter((faceName) => !!faceName);
 
   const edgeKey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
   const edgeToTriangles = new Map();
@@ -1811,12 +1919,14 @@ function reassignTinyFilletSidewallSliverTriangles(solid, opts = {}) {
         externalNeighborContact.set(neighborFaceID, (externalNeighborContact.get(neighborFaceID) || 0) + 1);
       }
     }
-    if (externalNeighborContact.size === 0) continue;
 
     let best = null;
-    for (const [neighborFaceID, sharedEdges] of externalNeighborContact.entries()) {
-      const neighborFaceName = String(idToFace.get(neighborFaceID) || '').trim();
+    for (const neighborFaceName of candidateFaceNames) {
       if (!neighborFaceName) continue;
+      if (neighborFaceName === currentFaceName) continue;
+      const neighborFaceID = faceToId.get(neighborFaceName);
+      if (!Number.isFinite(neighborFaceID)) continue;
+
       const neighborMetadata = (typeof solid.getFaceMetadata === 'function')
         ? (solid.getFaceMetadata(neighborFaceName) || {})
         : {};
@@ -1824,6 +1934,10 @@ function reassignTinyFilletSidewallSliverTriangles(solid, opts = {}) {
 
       const neighborAnalysis = getFaceAnalysis(neighborFaceName);
       if (!neighborAnalysis) continue;
+      const boundaryFit = measureTrianglePointsOnBoundarySegments(geometry.points, getBoundarySegments(neighborFaceName), {
+        distanceTolerance: boundaryDistanceTolerance,
+      });
+      if (!boundaryFit || boundaryFit.pointCount < geometry.points.length) continue;
 
       let maxPlaneDistance = 0;
       let onNeighborPlane = true;
@@ -1851,7 +1965,10 @@ function reassignTinyFilletSidewallSliverTriangles(solid, opts = {}) {
       const candidate = {
         faceID: neighborFaceID,
         faceName: neighborFaceName,
-        sharedEdges,
+        sharedEdges: externalNeighborContact.get(neighborFaceID) || 0,
+        distinctBoundarySegments: boundaryFit.distinctSegmentCount,
+        maxBoundaryDistance: boundaryFit.maxDistance,
+        totalBoundaryDistance: boundaryFit.totalDistance,
         maxPlaneDistance,
         featureOwnershipRank,
         area: getFaceArea(neighborFaceName),
@@ -1862,9 +1979,27 @@ function reassignTinyFilletSidewallSliverTriangles(solid, opts = {}) {
         || (candidate.featureOwnershipRank === best.featureOwnershipRank && candidate.sharedEdges > best.sharedEdges)
         || (candidate.featureOwnershipRank === best.featureOwnershipRank
           && candidate.sharedEdges === best.sharedEdges
+          && candidate.distinctBoundarySegments > best.distinctBoundarySegments)
+        || (candidate.featureOwnershipRank === best.featureOwnershipRank
+          && candidate.sharedEdges === best.sharedEdges
+          && candidate.distinctBoundarySegments === best.distinctBoundarySegments
+          && candidate.maxBoundaryDistance < best.maxBoundaryDistance)
+        || (candidate.featureOwnershipRank === best.featureOwnershipRank
+          && candidate.sharedEdges === best.sharedEdges
+          && candidate.distinctBoundarySegments === best.distinctBoundarySegments
+          && candidate.maxBoundaryDistance === best.maxBoundaryDistance
+          && candidate.totalBoundaryDistance < best.totalBoundaryDistance)
+        || (candidate.featureOwnershipRank === best.featureOwnershipRank
+          && candidate.sharedEdges === best.sharedEdges
+          && candidate.distinctBoundarySegments === best.distinctBoundarySegments
+          && candidate.maxBoundaryDistance === best.maxBoundaryDistance
+          && candidate.totalBoundaryDistance === best.totalBoundaryDistance
           && candidate.maxPlaneDistance < best.maxPlaneDistance)
         || (candidate.featureOwnershipRank === best.featureOwnershipRank
           && candidate.sharedEdges === best.sharedEdges
+          && candidate.distinctBoundarySegments === best.distinctBoundarySegments
+          && candidate.maxBoundaryDistance === best.maxBoundaryDistance
+          && candidate.totalBoundaryDistance === best.totalBoundaryDistance
           && candidate.maxPlaneDistance === best.maxPlaneDistance
           && candidate.area > best.area)
       ) {
@@ -1876,16 +2011,19 @@ function reassignTinyFilletSidewallSliverTriangles(solid, opts = {}) {
     ids[triIndex] = best.faceID >>> 0;
     reassignedTriangles += 1;
     if (debug) {
-      mutationDetails.push({
-        triIndex,
-        fromFace: currentFaceName,
-        toFace: best.faceName,
-        area: geometry.area,
-        minHeight: geometry.minHeight,
-        sharedEdges: best.sharedEdges,
-        maxPlaneDistance: best.maxPlaneDistance,
-      });
-    }
+        mutationDetails.push({
+          triIndex,
+          fromFace: currentFaceName,
+          toFace: best.faceName,
+          area: geometry.area,
+          minHeight: geometry.minHeight,
+          sharedEdges: best.sharedEdges,
+          distinctBoundarySegments: best.distinctBoundarySegments,
+          maxBoundaryDistance: best.maxBoundaryDistance,
+          totalBoundaryDistance: best.totalBoundaryDistance,
+          maxPlaneDistance: best.maxPlaneDistance,
+        });
+      }
   }
 
   if (reassignedTriangles <= 0) {
@@ -1893,6 +2031,7 @@ function reassignTinyFilletSidewallSliverTriangles(solid, opts = {}) {
       reassignedTriangles: 0,
       sliverHeightTolerance,
       planeDistanceTolerance,
+      boundaryDistanceTolerance,
     };
   }
 
@@ -1911,6 +2050,7 @@ function reassignTinyFilletSidewallSliverTriangles(solid, opts = {}) {
       reassignedTriangles,
       sliverHeightTolerance,
       planeDistanceTolerance,
+      boundaryDistanceTolerance,
       mutations: mutationDetails,
     });
   }
@@ -1919,10 +2059,12 @@ function reassignTinyFilletSidewallSliverTriangles(solid, opts = {}) {
     reassignedTriangles,
     sliverHeightTolerance,
     planeDistanceTolerance,
+    boundaryDistanceTolerance,
   };
 }
 
 export { mergeCoplanarAdjacentFilletEndCaps as __testOnlyMergeCoplanarAdjacentFilletEndCaps };
+export { reassignTinyFilletSidewallSliverTriangles as __testOnlyReassignTinyFilletSidewallSliverTriangles };
 
 function scoreFallbackRenameTarget(solid, faceName, featureID = '') {
   const metadata = (solid && typeof solid.getFaceMetadata === 'function')

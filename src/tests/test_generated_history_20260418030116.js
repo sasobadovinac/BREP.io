@@ -5,6 +5,39 @@ function getSolidByName(partHistory, name) {
   return solids.find((solid) => String(solid?.name || "") === String(name)) || null;
 }
 
+function triangleAreaFromAuthoringState(solid, triIndex) {
+  const triVerts = Array.isArray(solid?._triVerts) ? solid._triVerts : [];
+  const vertProperties = Array.isArray(solid?._vertProperties) ? solid._vertProperties : [];
+  const base = triIndex * 3;
+  if (base + 2 >= triVerts.length) return 0;
+  const i0 = (triVerts[base + 0] >>> 0) * 3;
+  const i1 = (triVerts[base + 1] >>> 0) * 3;
+  const i2 = (triVerts[base + 2] >>> 0) * 3;
+  if (i2 + 2 >= vertProperties.length) return 0;
+  const ax = vertProperties[i1 + 0] - vertProperties[i0 + 0];
+  const ay = vertProperties[i1 + 1] - vertProperties[i0 + 1];
+  const az = vertProperties[i1 + 2] - vertProperties[i0 + 2];
+  const bx = vertProperties[i2 + 0] - vertProperties[i0 + 0];
+  const by = vertProperties[i2 + 1] - vertProperties[i0 + 1];
+  const bz = vertProperties[i2 + 2] - vertProperties[i0 + 2];
+  const cx = ay * bz - az * by;
+  const cy = az * bx - ax * bz;
+  const cz = ax * by - ay * bx;
+  return 0.5 * Math.hypot(cx, cy, cz);
+}
+
+function countTinyTrianglesOnFaces(solid, faceNamePredicate, maxArea = 1e-6) {
+  const triIDs = Array.isArray(solid?._triIDs) ? solid._triIDs : [];
+  const idToFaceName = solid?._idToFaceName instanceof Map ? solid._idToFaceName : new Map();
+  let count = 0;
+  for (let triIndex = 0; triIndex < triIDs.length; triIndex++) {
+    const faceName = String(idToFaceName.get(triIDs[triIndex] >>> 0) || "");
+    if (!faceNamePredicate(faceName)) continue;
+    if (triangleAreaFromAuthoringState(solid, triIndex) <= maxArea) count += 1;
+  }
+  return count;
+}
+
 export async function test_generated_history_20260418030116(partHistory) {
   if (manifoldBuildSource !== "local") return;
   partHistory.expressions = "//Examples:\nx = 10 + 6; \ny = x * 2;\nresolution = configurator.resolution;";
@@ -59,11 +92,24 @@ export async function afterRun_generated_history_20260418030116(partHistory) {
     throw new Error(`[generated_history_20260418030116] Expected ${mergedHostFaceName} metadata to survive the merge.`);
   }
 
+  if (!(Number(solid.__filletEndCapReverseNudgeCount || 0) > 0)) {
+    throw new Error("[generated_history_20260418030116] Expected post-boolean fillet end-cap nudge reversal to run.");
+  }
+
   const remainingEndCaps = faceNames.filter((name) => {
     const metadata = solid.getFaceMetadata?.(name) || {};
     return metadata?.filletEndCap === true;
   });
   if (remainingEndCaps.length !== 0) {
     throw new Error(`[generated_history_20260418030116] Expected all coplanar post-boolean fillet end caps to merge, found ${remainingEndCaps.join(", ")}.`);
+  }
+
+  const remainingTinyF6TubeTriangles = countTinyTrianglesOnFaces(
+    solid,
+    (faceName) => faceName.startsWith("F6_FILLET_") && faceName.endsWith("_TUBE_Outer"),
+    1e-6,
+  );
+  if (remainingTinyF6TubeTriangles !== 0) {
+    throw new Error(`[generated_history_20260418030116] Expected F6 tube sidewalls to be free of near-zero-area sliver triangles, found ${remainingTinyF6TubeTriangles}.`);
   }
 }

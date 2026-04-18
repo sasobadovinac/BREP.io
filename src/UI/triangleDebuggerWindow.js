@@ -3,6 +3,10 @@ import { ArcballControls } from 'three/examples/jsm/controls/ArcballControls.js'
 import { FloatingWindow } from './FloatingWindow.js';
 
 const DEFAULT_BG = 0x0b0d10;
+const INFO_PLACEHOLDER = 'Select a triangle to see details.';
+const AREA_FILTER_MODE_ALL = 'all';
+const AREA_FILTER_MODE_HIDE_BELOW = 'hide-below';
+const AREA_FILTER_MODE_HIDE_ABOVE = 'hide-above';
 
 function ensureStyles() {
     if (document.getElementById('triangle-debugger-styles')) return;
@@ -82,8 +86,34 @@ function ensureStyles() {
     .tri-debugger__empty { color: #9aa4b2; font-style: italic; padding: 6px 2px; }
     .tri-debugger__filters {
         display: flex;
-        align-items: center;
+        flex-direction: column;
         gap: 8px;
+    }
+    .tri-debugger__filter-line {
+        display: flex;
+        align-items: flex-end;
+        gap: 8px;
+        flex-wrap: wrap;
+    }
+    .tri-debugger__filter-line--area {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 120px;
+        align-items: end;
+        gap: 8px;
+    }
+    .tri-debugger__field {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+        flex: 1 1 0;
+    }
+    .tri-debugger__field--compact {
+        flex: 0 0 120px;
+    }
+    .tri-debugger__field-label {
+        color: #9aa4b2;
+        font-size: 11px;
     }
     .tri-debugger__toggle {
         display: inline-flex;
@@ -92,9 +122,26 @@ function ensureStyles() {
         color: #9aa4b2;
         font-size: 11px;
         user-select: none;
+        min-height: 32px;
+        white-space: nowrap;
+        align-self: flex-start;
     }
     .tri-debugger__toggle input {
         accent-color: #7aa2f7;
+    }
+    .tri-debugger__control {
+        width: 100%;
+        box-sizing: border-box;
+        background: #0b0f14;
+        border: 1px solid #1e2430;
+        color: #e5e7eb;
+        border-radius: 8px;
+        padding: 6px 8px;
+    }
+    .tri-debugger__filter-summary {
+        color: #9aa4b2;
+        font-size: 11px;
+        min-height: 16px;
     }
 
     .tri-debugger__main { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
@@ -171,6 +218,14 @@ function ensureStyles() {
         .tri-debugger { grid-template-columns: 1fr; grid-template-rows: 240px 1fr; }
         .tri-debugger__sidebar { min-height: 220px; }
     }
+    @media (max-width: 420px) {
+        .tri-debugger__filter-line--area {
+            grid-template-columns: 1fr;
+        }
+        .tri-debugger__field--compact {
+            flex-basis: auto;
+        }
+    }
     `;
     document.head.appendChild(style);
 }
@@ -193,6 +248,9 @@ export class TriangleDebuggerWindow {
         this.canvasHost = null;
         this.statusEl = null;
         this.filterInput = null;
+        this.areaThresholdInput = null;
+        this.areaModeSelect = null;
+        this.filterSummaryEl = null;
         this.solidNameEl = null;
         this.solidMetaEl = null;
 
@@ -210,14 +268,22 @@ export class TriangleDebuggerWindow {
         this._listButtons = new Map();
         this._filterText = '';
         this._filterHighValence = false;
+        this._areaThreshold = null;
+        this._areaFilterMode = AREA_FILTER_MODE_ALL;
         this._selectedIndex = null;
+        this._visibleTriangleIndices = [];
+        this._visibleTriangleSet = new Set();
         this._resizeObserver = null;
         this._raf = null;
         this._currentTarget = null;
         this._orthoSize = 4;
         this._raycaster = new THREE.Raycaster();
         this._pointer = new THREE.Vector2();
-        this._onCanvasPointerDown = (ev) => this._pickTriangle(ev);
+        this._pointerGesture = { active: false, pointerId: null, button: null, startX: 0, startY: 0, moved: false };
+        this._onCanvasPointerDown = (ev) => this._handleCanvasPointerDown(ev);
+        this._onWindowPointerMove = (ev) => this._handleCanvasPointerMove(ev);
+        this._onWindowPointerUp = (ev) => this._handleCanvasPointerUp(ev);
+        this._onWindowPointerCancel = (ev) => this._handleCanvasPointerCancel(ev);
         this._onWindowResize = () => this._onResize();
         this._onInfoClick = (ev) => this._handleInfoClick(ev);
         this._selectedEdgeKey = null;
@@ -301,32 +367,87 @@ export class TriangleDebuggerWindow {
         this.solidMetaEl.textContent = '-';
         solidBox.append(this.solidNameEl, this.solidMetaEl);
 
-        const filterRow = document.createElement('div');
-        filterRow.className = 'tri-debugger__filters';
+        const filterControls = document.createElement('div');
+        filterControls.className = 'tri-debugger__filters';
+        const searchRow = document.createElement('div');
+        searchRow.className = 'tri-debugger__filter-line';
         this.filterInput = document.createElement('input');
         this.filterInput.className = 'tri-debugger__search';
         this.filterInput.placeholder = 'Filter by face or triangle #';
         this.filterInput.addEventListener('input', () => {
             this._filterText = (this.filterInput.value || '').trim().toLowerCase();
-            this._populateList();
+            this._applyFilters();
         });
+        searchRow.appendChild(this.filterInput);
+
+        const areaRow = document.createElement('div');
+        areaRow.className = 'tri-debugger__filter-line tri-debugger__filter-line--area';
+
+        const areaModeField = document.createElement('label');
+        areaModeField.className = 'tri-debugger__field';
+        const areaModeLabel = document.createElement('span');
+        areaModeLabel.className = 'tri-debugger__field-label';
+        areaModeLabel.textContent = 'Area visibility';
+        this.areaModeSelect = document.createElement('select');
+        this.areaModeSelect.className = 'tri-debugger__control';
+        for (const { value, label } of [
+            { value: AREA_FILTER_MODE_ALL, label: 'Show all' },
+            { value: AREA_FILTER_MODE_HIDE_BELOW, label: 'Hide below threshold' },
+            { value: AREA_FILTER_MODE_HIDE_ABOVE, label: 'Hide above threshold' },
+        ]) {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = label;
+            this.areaModeSelect.appendChild(option);
+        }
+        this.areaModeSelect.value = this._areaFilterMode;
+        this.areaModeSelect.addEventListener('change', () => {
+            this._areaFilterMode = this.areaModeSelect?.value || AREA_FILTER_MODE_ALL;
+            this._applyFilters();
+        });
+        areaModeField.append(areaModeLabel, this.areaModeSelect);
+
+        const areaThresholdField = document.createElement('label');
+        areaThresholdField.className = 'tri-debugger__field tri-debugger__field--compact';
+        const areaThresholdLabel = document.createElement('span');
+        areaThresholdLabel.className = 'tri-debugger__field-label';
+        areaThresholdLabel.textContent = 'Area threshold';
+        this.areaThresholdInput = document.createElement('input');
+        this.areaThresholdInput.type = 'number';
+        this.areaThresholdInput.min = '0';
+        this.areaThresholdInput.step = 'any';
+        this.areaThresholdInput.className = 'tri-debugger__control';
+        this.areaThresholdInput.placeholder = 'Disabled';
+        this.areaThresholdInput.addEventListener('input', () => {
+            const raw = String(this.areaThresholdInput?.value || '').trim();
+            const next = raw ? Number(raw) : null;
+            this._areaThreshold = Number.isFinite(next) ? Math.max(0, next) : null;
+            this._applyFilters();
+        });
+        areaThresholdField.append(areaThresholdLabel, this.areaThresholdInput);
+
         const toggleWrap = document.createElement('label');
         toggleWrap.className = 'tri-debugger__toggle';
         const toggle = document.createElement('input');
         toggle.type = 'checkbox';
         toggle.addEventListener('change', () => {
             this._filterHighValence = !!toggle.checked;
-            this._populateList();
+            this._applyFilters();
         });
         const toggleText = document.createElement('span');
         toggleText.textContent = 'Only edges with >2 adjacents';
         toggleWrap.append(toggle, toggleText);
-        filterRow.append(this.filterInput, toggleWrap);
+        areaRow.append(areaModeField, areaThresholdField);
+
+        this.filterSummaryEl = document.createElement('div');
+        this.filterSummaryEl.className = 'tri-debugger__filter-summary';
+        this.filterSummaryEl.textContent = 'No triangles loaded.';
 
         this.listEl = document.createElement('div');
         this.listEl.className = 'tri-debugger__list';
 
-        sidebar.append(solidBox, filterRow, this.listEl);
+        filterControls.append(searchRow, areaRow, toggleWrap, this.filterSummaryEl);
+        sidebar.append(solidBox, filterControls, this.listEl);
 
         const main = document.createElement('div');
         main.className = 'tri-debugger__main';
@@ -377,6 +498,9 @@ export class TriangleDebuggerWindow {
         this.renderer.setClearColor(new THREE.Color(DEFAULT_BG), 1);
         if (this.canvasHost) this.canvasHost.appendChild(this.renderer.domElement);
         this.renderer.domElement.addEventListener('pointerdown', this._onCanvasPointerDown, { capture: true });
+        try { window.addEventListener('pointermove', this._onWindowPointerMove, { capture: true, passive: true }); } catch { }
+        try { window.addEventListener('pointerup', this._onWindowPointerUp, { capture: true, passive: true }); } catch { }
+        try { window.addEventListener('pointercancel', this._onWindowPointerCancel, { capture: true, passive: true }); } catch { }
 
         this.controls = new ArcballControls(this.camera, this.renderer.domElement, this.scene);
         try { this.controls.setGizmosVisible(false); } catch { }
@@ -430,8 +554,61 @@ export class TriangleDebuggerWindow {
         this.camera.updateProjectionMatrix();
     }
 
+    _getDragThreshold() {
+        const threshold = this.viewer && typeof this.viewer._dragThreshold === 'number' ? this.viewer._dragThreshold : 5;
+        return Math.max(0, threshold || 0);
+    }
+
+    _resetPointerGesture() {
+        this._pointerGesture.active = false;
+        this._pointerGesture.pointerId = null;
+        this._pointerGesture.button = null;
+        this._pointerGesture.startX = 0;
+        this._pointerGesture.startY = 0;
+        this._pointerGesture.moved = false;
+    }
+
+    _handleCanvasPointerDown(ev) {
+        if (!ev || ev.button !== 0) return;
+        this._pointerGesture.active = true;
+        this._pointerGesture.pointerId = ev.pointerId;
+        this._pointerGesture.button = ev.button;
+        this._pointerGesture.startX = ev.clientX;
+        this._pointerGesture.startY = ev.clientY;
+        this._pointerGesture.moved = false;
+    }
+
+    _handleCanvasPointerMove(ev) {
+        const state = this._pointerGesture;
+        if (!state.active || state.pointerId !== ev?.pointerId) return;
+        if (state.moved) return;
+        const dx = Math.abs(ev.clientX - state.startX);
+        const dy = Math.abs(ev.clientY - state.startY);
+        if ((dx + dy) > this._getDragThreshold()) state.moved = true;
+    }
+
+    _handleCanvasPointerUp(ev) {
+        const state = this._pointerGesture;
+        if (!state.active || state.pointerId !== ev?.pointerId) return;
+        const dx = Math.abs(ev.clientX - state.startX);
+        const dy = Math.abs(ev.clientY - state.startY);
+        const moved = state.moved || (dx + dy) > this._getDragThreshold();
+        const shouldPick = state.button === 0 && ev.button === 0 && !moved;
+        this._resetPointerGesture();
+        if (!shouldPick) return;
+        this._pickTriangle(ev);
+    }
+
+    _handleCanvasPointerCancel(ev) {
+        const state = this._pointerGesture;
+        if (!state.active) return;
+        if (ev && state.pointerId !== ev.pointerId) return;
+        this._resetPointerGesture();
+    }
+
     _pickTriangle(ev) {
-        if (!this.baseMesh || !this.renderer || !this.camera) return;
+        if (!this.baseMesh || !this.baseMesh.visible || !this.renderer || !this.camera) return;
+        if (!this._visibleTriangleIndices.length) return;
         const rect = this.renderer.domElement.getBoundingClientRect();
         const x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
         const y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
@@ -441,11 +618,177 @@ export class TriangleDebuggerWindow {
         if (!hits.length) return;
         const idx = hits[0]?.faceIndex;
         if (!Number.isFinite(idx)) return;
-        const triIdx = Math.max(0, Math.min(this.triangles.length - 1, idx | 0));
+        const triIdx = this._visibleTriangleIndices[idx | 0];
         if (!this.triangles[triIdx]) return;
-        ev.preventDefault();
-        ev.stopPropagation();
         this._selectTriangle(triIdx);
+    }
+
+    _getAreaThresholdValue() {
+        const value = Number(this._areaThreshold);
+        if (!Number.isFinite(value)) return null;
+        return Math.max(0, value);
+    }
+
+    _isTriangleAreaVisible(tri) {
+        if (!tri) return false;
+        const threshold = this._getAreaThresholdValue();
+        if (this._areaFilterMode === AREA_FILTER_MODE_HIDE_BELOW && threshold !== null) {
+            return Number(tri.area || 0) >= threshold;
+        }
+        if (this._areaFilterMode === AREA_FILTER_MODE_HIDE_ABOVE && threshold !== null) {
+            return Number(tri.area || 0) <= threshold;
+        }
+        return true;
+    }
+
+    _matchesTriangleTextFilter(tri) {
+        if (!tri) return false;
+        const filter = this._filterText;
+        if (!filter) return true;
+        const label = `#${tri.index} ${tri.faceName || ''}`.toLowerCase();
+        return label.includes(filter);
+    }
+
+    _isTriangleVisible(tri) {
+        if (!tri) return false;
+        if (!this._isTriangleAreaVisible(tri)) return false;
+        if (!this._matchesTriangleTextFilter(tri)) return false;
+        if (this._filterHighValence && !tri.hasCrowdedEdge) return false;
+        return true;
+    }
+
+    _filterVisibleTriangleIndices(indices) {
+        if (!Array.isArray(indices) || !indices.length) return [];
+        const out = [];
+        for (const idx of indices) {
+            if (this._visibleTriangleSet.has(idx)) out.push(idx);
+        }
+        return out;
+    }
+
+    _setInfoPlaceholder(message = INFO_PLACEHOLDER) {
+        if (!this.infoEl) return;
+        this.infoEl.innerHTML = `<div class="tri-debugger__empty">${message}</div>`;
+    }
+
+    _updateFilterSummary(visibleCount) {
+        if (!this.filterSummaryEl) return;
+        const total = this.triangles.length || 0;
+        if (!total) {
+            this.filterSummaryEl.textContent = 'No triangles loaded.';
+            return;
+        }
+        const parts = [`Visible ${visibleCount}/${total}`];
+        const threshold = this._getAreaThresholdValue();
+        if (this._areaFilterMode === AREA_FILTER_MODE_HIDE_BELOW && threshold !== null) {
+            parts.push(`hide < ${round(threshold)}`);
+        } else if (this._areaFilterMode === AREA_FILTER_MODE_HIDE_ABOVE && threshold !== null) {
+            parts.push(`hide > ${round(threshold)}`);
+        }
+        if (this._filterHighValence) parts.push('crowded only');
+        if (this._filterText) parts.push(`search "${this._filterText}"`);
+        this.filterSummaryEl.textContent = parts.join(' • ');
+    }
+
+    _rebuildEdgeLinesGeometry() {
+        if (!this.edgeLines || !this.baseMesh?.geometry) return;
+        const oldGeometry = this.edgeLines.geometry;
+        let nextGeometry = null;
+        try { nextGeometry = new THREE.WireframeGeometry(this.baseMesh.geometry); } catch { }
+        if (nextGeometry) {
+            this.edgeLines.geometry = nextGeometry;
+            this.edgeLines.visible = this._visibleTriangleIndices.length > 0;
+        } else {
+            this.edgeLines.visible = false;
+        }
+        if (oldGeometry && oldGeometry !== nextGeometry) {
+            try { oldGeometry.dispose(); } catch { }
+        }
+    }
+
+    _rebuildVisibleGeometry() {
+        const mesh = this.baseMesh;
+        if (!mesh || !this.triangles.length) {
+            this._visibleTriangleIndices = [];
+            this._visibleTriangleSet = new Set();
+            if (mesh) mesh.visible = false;
+            if (this.edgeLines) this.edgeLines.visible = false;
+            return 0;
+        }
+        const visible = [];
+        for (const tri of this.triangles) {
+            if (this._isTriangleVisible(tri)) visible.push(tri.index);
+        }
+        this._visibleTriangleIndices = visible;
+        this._visibleTriangleSet = new Set(visible);
+        const nextGeometry = new THREE.BufferGeometry();
+        if (visible.length) {
+            const positions = new Float32Array(visible.length * 9);
+            let w = 0;
+            for (const triIndex of visible) {
+                const tri = this.triangles[triIndex];
+                if (!tri) continue;
+                for (const p of [tri.p1, tri.p2, tri.p3]) {
+                    positions[w++] = p[0];
+                    positions[w++] = p[1];
+                    positions[w++] = p[2];
+                }
+            }
+            nextGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            nextGeometry.computeVertexNormals();
+            nextGeometry.computeBoundingBox();
+            nextGeometry.computeBoundingSphere();
+        } else {
+            nextGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(0), 3));
+        }
+        const oldGeometry = mesh.geometry;
+        mesh.geometry = nextGeometry;
+        mesh.visible = visible.length > 0;
+        this._rebuildEdgeLinesGeometry();
+        if (oldGeometry && oldGeometry !== nextGeometry) {
+            try { oldGeometry.dispose(); } catch { }
+        }
+        return visible.length;
+    }
+
+    _applyFilters() {
+        const visibleCount = this._rebuildVisibleGeometry();
+        this._populateList(visibleCount);
+        if (!this.triangles.length) {
+            this._selectedIndex = null;
+            this._selectedEdgeKey = null;
+            this._setInfoPlaceholder(INFO_PLACEHOLDER);
+            this._highlightListSelection();
+            this._renderOnce();
+            return;
+        }
+        if (!visibleCount) {
+            this._selectedIndex = null;
+            this._selectedEdgeKey = null;
+            if (this.highlightMesh) this.highlightMesh.visible = false;
+            if (this.adjacentMesh) this.adjacentMesh.visible = false;
+            this._setStatus('No triangles visible for the current filters.');
+            this._setInfoPlaceholder('No triangles match the current filters.');
+            this._highlightListSelection();
+            this._renderOnce();
+            return;
+        }
+        this._setStatus('');
+        if (!this._visibleTriangleSet.has(this._selectedIndex)) {
+            const nextIndex = this._visibleTriangleIndices[0];
+            if (Number.isFinite(nextIndex)) {
+                this._selectTriangle(nextIndex);
+                return;
+            }
+        }
+        const tri = this.triangles[this._selectedIndex];
+        if (tri) {
+            this._updateHighlight(tri);
+            this._updateAdjacentHighlight(tri);
+            this._renderInfo(tri);
+        }
+        this._highlightListSelection();
+        this._renderOnce();
     }
 
     _setStatus(msg) {
@@ -488,6 +831,9 @@ export class TriangleDebuggerWindow {
         this._listButtons.clear();
         this._selectedIndex = null;
         this._selectedEdgeKey = null;
+        this._visibleTriangleIndices = [];
+        this._visibleTriangleSet = new Set();
+        this._resetPointerGesture();
         if (this.listEl) {
             this.listEl.innerHTML = '';
             if (showPlaceholder) {
@@ -497,9 +843,8 @@ export class TriangleDebuggerWindow {
                 this.listEl.appendChild(empty);
             }
         }
-        if (this.infoEl && showPlaceholder) {
-            this.infoEl.innerHTML = '<div class="tri-debugger__empty">Select a triangle to see details.</div>';
-        }
+        if (showPlaceholder) this._setInfoPlaceholder(INFO_PLACEHOLDER);
+        this._updateFilterSummary(0);
         if (this.highlightMesh) this.highlightMesh.visible = false;
         if (this.adjacentMesh) this.adjacentMesh.visible = false;
         this._renderOnce();
@@ -667,9 +1012,8 @@ export class TriangleDebuggerWindow {
 
             const mat = new THREE.MeshBasicMaterial({
                 color: 0x2a3545,
-                wireframe: true,
                 transparent: true,
-                opacity: 0.65,
+                opacity: 0.16,
                 side: THREE.DoubleSide,
                 depthWrite: false,
             });
@@ -678,8 +1022,8 @@ export class TriangleDebuggerWindow {
             this.scene.add(this.baseMesh);
 
             try {
-                const edgesGeom = new THREE.EdgesGeometry(geom, 15);
-                const edgesMat = new THREE.LineBasicMaterial({ color: 0x304050, transparent: true, opacity: 0.45 });
+                const edgesGeom = new THREE.WireframeGeometry(geom);
+                const edgesMat = new THREE.LineBasicMaterial({ color: 0x506784, transparent: true, opacity: 0.7 });
                 this.edgeLines = new THREE.LineSegments(edgesGeom, edgesMat);
                 this.edgeLines.renderOrder = 2;
                 this.scene.add(this.edgeLines);
@@ -719,9 +1063,8 @@ export class TriangleDebuggerWindow {
             if (this.solidNameEl) this.solidNameEl.textContent = solid.name || 'Solid';
             if (this.solidMetaEl) this.solidMetaEl.textContent = `${triCount} triangles | ${faceCount} faces`;
 
-            this._populateList();
-            this._fitCamera(geom);
-            if (triangles.length) this._selectTriangle(0);
+            this._applyFilters();
+            this._fitCamera();
             this._renderOnce();
         } catch (e) {
             console.warn('[TriangleDebugger] Failed to load solid:', e);
@@ -732,36 +1075,33 @@ export class TriangleDebuggerWindow {
         }
     }
 
-    _populateList() {
+    _populateList(visibleCount = this._visibleTriangleIndices.length) {
         if (!this.listEl) return;
         this.listEl.innerHTML = '';
         this._listButtons.clear();
-        const filter = this._filterText;
-        let rendered = 0;
         const frag = document.createDocumentFragment();
         for (const tri of this.triangles) {
-            const label = `#${tri.index} ${tri.faceName || ''}`.toLowerCase();
-            if (filter && !label.includes(filter)) continue;
-            if (this._filterHighValence && !tri.hasCrowdedEdge) continue;
-            rendered++;
+            if (!this._isTriangleVisible(tri)) continue;
             const btn = document.createElement('button');
             btn.className = 'tri-debugger__row';
             btn.dataset.index = String(tri.index);
-            const adjText = `Adj ${tri.adjacent?.length ?? 0}${tri.hasCrowdedEdge ? ' • crowd' : ''}`;
+            const adjCount = Array.isArray(tri.adjacent) ? tri.adjacent.length : 0;
+            const adjText = `Adj ${adjCount}${tri.hasCrowdedEdge ? ' • crowd' : ''}`;
             btn.innerHTML = `<div class="tri-debugger__row-title">#${tri.index}<span class="tri-debugger__row-face">${tri.faceName || 'face'}</span></div>
                 <div class="tri-debugger__row-meta">Area ${tri.area ?? 0} | Normal (${tri.normal.join(', ')}) | ${adjText}</div>`;
             btn.addEventListener('click', () => this._selectTriangle(tri.index));
             frag.appendChild(btn);
             this._listButtons.set(tri.index, btn);
         }
-        if (rendered === 0) {
+        if (visibleCount === 0) {
             const empty = document.createElement('div');
             empty.className = 'tri-debugger__empty';
-            empty.textContent = filter ? 'No triangles match this filter.' : 'No triangles.';
+            empty.textContent = this.triangles.length ? 'No triangles match this filter.' : 'No triangles.';
             this.listEl.appendChild(empty);
         } else {
             this.listEl.appendChild(frag);
         }
+        this._updateFilterSummary(visibleCount);
         this._highlightListSelection();
     }
 
@@ -774,7 +1114,7 @@ export class TriangleDebuggerWindow {
     _selectTriangle(index) {
         if (!this.triangles || !this.triangles.length) return;
         const tri = this.triangles[index];
-        if (!tri) return;
+        if (!tri || !this._visibleTriangleSet.has(index)) return;
         this._selectedIndex = index;
         this._selectedEdgeKey = null;
         this._highlightListSelection();
@@ -833,7 +1173,8 @@ export class TriangleDebuggerWindow {
 
     _renderInfo(tri) {
         if (!this.infoEl || !tri) return;
-        const adjBadges = (tri.adjacent || []).map((idx) => {
+        const adjacent = Array.isArray(tri.adjacent) ? tri.adjacent : [];
+        const adjBadges = adjacent.map((idx) => {
             const face = this.triangles[idx]?.faceName || 'face';
             const sel = idx === this._selectedIndex;
             return `<span class="tri-debugger__badge${sel ? ' is-selected' : ''}" data-adj-index="${idx}">#${idx} | ${face}</span>`;
@@ -846,7 +1187,7 @@ export class TriangleDebuggerWindow {
             return `<span class="tri-debugger__badge${sel ? ' is-selected' : ''}" data-edge-key="${e.key}">${e.verts[0]}-${e.verts[1]} | ${count} adj${tag}</span>`;
         }).join('') || '<span class="tri-debugger__badge">None</span>';
         const selEdge = edges.find(e => e.key === this._selectedEdgeKey) || null;
-        const edgeNeighbors = selEdge ? selEdge.neighbors || [] : [];
+        const edgeNeighbors = selEdge ? (selEdge.neighbors || []) : [];
         const edgeNeighborBadges = edgeNeighbors.length
             ? edgeNeighbors.map(idx => {
                 const face = this.triangles[idx]?.faceName || 'face';
@@ -895,6 +1236,7 @@ export class TriangleDebuggerWindow {
 
     _fitCamera(geom = null) {
         if (!this.camera || !this.controls) return;
+        if (!geom && !this._visibleTriangleIndices.length) return;
         const g = geom || this.baseMesh?.geometry;
         if (!g) return;
         try { if (!g.boundingSphere) g.computeBoundingSphere(); } catch { }
