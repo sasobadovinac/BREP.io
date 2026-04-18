@@ -153,6 +153,8 @@ import {
 } from './test_cppSolidNativeOps.js';
 import {
     test_cppTube_closed_hollow_tube_preserves_expected_face_labels,
+    test_cppTube_native_auto_falls_back_to_slow_on_foldback_path,
+    test_cppTube_native_builder_reports_selected_build_mode,
     test_cppTube_open_tube_preserves_expected_face_labels,
     test_cppTube_union_preserves_distinct_face_labels_across_native_snapshots,
 } from './test_cppTube.js';
@@ -311,6 +313,8 @@ export const testFunctions = [
     { test: test_cppTube_open_tube_preserves_expected_face_labels, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     { test: test_cppTube_closed_hollow_tube_preserves_expected_face_labels, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     { test: test_cppTube_union_preserves_distinct_face_labels_across_native_snapshots, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_cppTube_native_builder_reports_selected_build_mode, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_cppTube_native_auto_falls_back_to_slow_on_foldback_path, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     { test: test_cppPrimitive_cube_preserves_expected_face_labels, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     { test: test_cppPrimitive_cylinder_preserves_expected_face_labels_and_metadata, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     { test: test_cppPrimitive_cone_preserves_expected_face_labels_and_metadata, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },

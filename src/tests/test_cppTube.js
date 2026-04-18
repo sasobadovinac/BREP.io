@@ -77,3 +77,58 @@ export async function test_cppTube_union_preserves_distinct_face_labels_across_n
     assert(faceNames.has("CPP_TUBE_UNION_B_Outer"), "Expected unioned native tubes to preserve tube B Outer face.");
     assert(faceNames.has("CPP_TUBE_UNION_B_CapEnd"), "Expected unioned native tubes to preserve tube B CapEnd face.");
 }
+
+export async function test_cppTube_native_builder_reports_selected_build_mode() {
+    if (manifoldBuildSource !== "local" || !tubeHasNativeBuilder()) {
+        return;
+    }
+
+    const points = [[0, 0, 0], [0, 20, 0]];
+    const tube = new Tube({
+        points,
+        radius: 2,
+        resolution: 24,
+        closed: false,
+        name: "CPP_TUBE_MODE",
+        preferFast: true,
+    });
+
+    assert(tube._tubeBuildMode === "fast", `Expected default tube generate() path to use native build-mode annotation, got ${tube._tubeBuildMode}.`);
+
+    const fastSnapshot = tube.buildNativeSnapshot({ preferFast: true, allowSlowFallback: false });
+    assert(fastSnapshot?.buildMode === "fast", `Expected explicit fast native tube build, got ${fastSnapshot?.buildMode}.`);
+    assert(fastSnapshot?.requestedFast === true, "Expected explicit fast native tube build to record requestedFast=true.");
+    assert(fastSnapshot?.fallbackFromFast === false, "Did not expect explicit fast native tube build to mark fallbackFromFast.");
+
+    const slowSnapshot = tube.buildNativeSnapshot({ preferFast: false });
+    assert(slowSnapshot?.buildMode === "slow", `Expected explicit slow native tube build, got ${slowSnapshot?.buildMode}.`);
+    assert(slowSnapshot?.requestedFast === false, "Expected explicit slow native tube build to record requestedFast=false.");
+    assert(slowSnapshot?.fallbackFromFast === false, "Did not expect explicit slow native tube build to mark fallbackFromFast.");
+}
+
+export async function test_cppTube_native_auto_falls_back_to_slow_on_foldback_path() {
+    if (manifoldBuildSource !== "local" || !tubeHasNativeBuilder()) {
+        return;
+    }
+
+    const points = [[0, 0, 0], [10, 0, 0], [10, 2, 0], [0, 2, 0]];
+    const autoTube = new Tube({
+        points,
+        radius: 1.5,
+        resolution: 24,
+        closed: false,
+        name: "CPP_TUBE_FOLDBACK",
+        preferFast: true,
+    });
+
+    assert(autoTube._tubeBuildMode === "slow", `Expected native auto tube build to fall back to slow for foldback path, got ${autoTube._tubeBuildMode}.`);
+
+    const autoSnapshot = autoTube.buildNativeSnapshot({ preferFast: true, allowSlowFallback: true });
+    assert(autoSnapshot?.buildMode === "slow", `Expected native auto tube snapshot to fall back to slow, got ${autoSnapshot?.buildMode}.`);
+    assert(autoSnapshot?.fallbackFromFast === true, "Expected native auto tube snapshot to record fallbackFromFast=true.");
+    assert(autoSnapshot?.fallbackReason === "path_foldback_proximity", `Expected path_foldback_proximity fallback, got ${autoSnapshot?.fallbackReason}.`);
+
+    const forcedFastSnapshot = autoTube.buildNativeSnapshot({ preferFast: true, allowSlowFallback: false });
+    assert(forcedFastSnapshot?.buildMode === "fast", `Expected explicit force-fast tube build, got ${forcedFastSnapshot?.buildMode}.`);
+    assert(forcedFastSnapshot?.selfUnionStats?.pathFoldbackLikely === true, "Expected force-fast tube build to expose the same pathFoldbackLikely signal.");
+}

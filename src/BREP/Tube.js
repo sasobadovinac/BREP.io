@@ -46,6 +46,7 @@ function applyNativeTubeSnapshot(target, snapshot, name) {
   target._auxEdges = [];
   target.debugSphereSolids = [];
   target._selfUnionStats = snapshot?.selfUnionStats ?? null;
+  target._tubeBuildMode = typeof snapshot?.buildMode === 'string' ? snapshot.buildMode : null;
   target.name = name || 'Tube';
   target.params.closed = !!snapshot?.closed;
   addTubePathAuxEdge(target, snapshot?.pathPoints || target.params?.points, target.name, target.params.closed);
@@ -97,29 +98,14 @@ export class Tube extends Solid {
 
   generate() {
     const preferFast = this.params?.preferFast !== false;
-    if (preferFast) {
-      try {
-        const fastSnapshot = this.buildNativeSnapshot({ preferFast: true });
-        applyNativeTubeSnapshot(this, fastSnapshot, this.params?.name);
-        if (fastSnapshot?.selfUnionStats?.selfIntersectionLikely) {
-          if (typeof this.free === 'function') {
-            try { this.free(); } catch { }
-          }
-          return this.generateSlow();
-        }
-        return this;
-      } catch (error) {
-        console.warn('Tube fast generation failed; falling back to native slow.', error);
-        if (typeof this.free === 'function') {
-          try { this.free(); } catch { }
-        }
-      }
-    }
-    return this.generateSlow();
+    return this.generateNative({
+      preferFast,
+      allowSlowFallback: preferFast,
+    });
   }
 
   generateFast() {
-    return this.generateNative({ preferFast: true });
+    return this.generateNative({ preferFast: true, allowSlowFallback: false });
   }
 
   generateSlow() {
@@ -146,6 +132,7 @@ export class Tube extends Solid {
       resolution: Math.max(8, Math.floor(Number(resolution) || DEFAULT_SEGMENTS)),
       closed: !!closed,
       preferFast: overrides.preferFast ?? true,
+      allowSlowFallback: overrides.allowSlowFallback ?? (overrides.preferFast ?? true),
       selfUnion: overrides.selfUnion ?? (selfUnion !== false),
       name: name || 'Tube',
     });

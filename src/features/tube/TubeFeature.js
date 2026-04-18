@@ -33,7 +33,7 @@ const inputParamsSchema = {
     type: 'options',
     options: ['Light (fast)', 'Heavy (slow)'],
     default_value: 'Light (fast)',
-    hint: 'Light runs fast-first tube (auto fallback), Heavy forces the slower robust build'
+    hint: 'Light uses the native auto tube builder; Heavy forces the slower robust build'
   },
   debug: {
     type: 'boolean',
@@ -464,7 +464,7 @@ export class TubeFeature {
           innerRadius: inner,
           resolution: baseResolution,
           mode: modeSelection,
-          builder: preferFast ? 'Tube (fast-first)' : 'Tube (slow)',
+          builder: preferFast ? 'Tube (native auto)' : 'Tube (slow)',
           groupIndex: i,
           isClosedLoop,
           pathPointCount: finalPoints.length,

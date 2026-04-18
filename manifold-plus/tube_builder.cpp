@@ -88,6 +88,8 @@ struct FastTubeResult {
   uint32_t pre_triangles = 0;
   uint32_t post_triangles = 0;
   bool union_succeeded = false;
+  bool path_foldback_likely = false;
+  double min_non_adjacent_segment_distance = std::numeric_limits<double>::infinity();
 };
 
 struct TubeFaceLabels {
@@ -106,9 +108,38 @@ struct TubeBuildOptions {
   int resolution = 32;
   bool closed = false;
   bool prefer_fast = true;
+  bool allow_slow_fallback = true;
   bool self_union = true;
   std::string name = "Tube";
 };
+
+bool FastTubeNeedsSlowFallback(const FastTubeResult& fast_result,
+                               const TubeBuildOptions& options) {
+  if (!options.allow_slow_fallback || !options.prefer_fast) {
+    return false;
+  }
+  if (fast_result.path_foldback_likely) return true;
+  if (!options.self_union) return false;
+  return fast_result.post_triangles > fast_result.pre_triangles;
+}
+
+void AnnotateTubeSnapshotBuildDecision(emscripten::val snapshot,
+                                       const char* build_mode,
+                                       bool requested_fast,
+                                       bool fallback_from_fast,
+                                       const std::string& fallback_reason,
+                                       const std::string& fast_error) {
+  snapshot.set("buildMode", std::string(build_mode ? build_mode : ""));
+  snapshot.set("requestedFast", requested_fast);
+  snapshot.set("fallbackFromFast", fallback_from_fast);
+  snapshot.set(
+      "fallbackReason",
+      fallback_reason.empty() ? emscripten::val::null()
+                              : emscripten::val(fallback_reason));
+  snapshot.set("fastBuilderError",
+               fast_error.empty() ? emscripten::val::null()
+                                  : emscripten::val(fast_error));
+}
 
 double ReadFiniteNumber(const emscripten::val& value, const char* label) {
   if (value.isUndefined() || value.isNull()) {
@@ -196,6 +227,10 @@ Vec3 RotateAroundAxis(const Vec3& vector, const Vec3& axis, double angle) {
 
 manifold::vec3 ToManifoldVec3(const Vec3& v) {
   return manifold::vec3(v.x, v.y, v.z);
+}
+
+double ClampUnit(double value) {
+  return std::max(-1.0, std::min(1.0, value));
 }
 
 TubeFaceLabels MakeTubeFaceLabels(const std::string& name, bool closed,
@@ -327,6 +362,135 @@ std::vector<Vec3> SmoothPath(const std::vector<Vec3>& points,
       CalculateTubeIntersectionTrimming(points, tube_radius);
   if (trimmed.size() < 2) return points;
   return DedupeConsecutive(trimmed, 1e-9);
+}
+
+double SegmentSegmentDistanceSq(const Vec3& p1, const Vec3& q1, const Vec3& p2,
+                                const Vec3& q2) {
+  const Vec3 d1 = Subtract(q1, p1);
+  const Vec3 d2 = Subtract(q2, p2);
+  const Vec3 r = Subtract(p1, p2);
+  const double a = Dot(d1, d1);
+  const double e = Dot(d2, d2);
+  const double f = Dot(d2, r);
+
+  double s = 0.0;
+  double t = 0.0;
+
+  if (a <= kEpsSq && e <= kEpsSq) return DistanceSq(p1, p2);
+  if (a <= kEpsSq) {
+    t = std::max(0.0, std::min(1.0, f / e));
+  } else {
+    const double c = Dot(d1, r);
+    if (e <= kEpsSq) {
+      s = std::max(0.0, std::min(1.0, -c / a));
+    } else {
+      const double b = Dot(d1, d2);
+      const double denom = a * e - b * b;
+      if (std::abs(denom) > kEpsSq) {
+        s = std::max(0.0, std::min(1.0, (b * f - c * e) / denom));
+      }
+      const double t_nom = b * s + f;
+      if (t_nom <= 0.0) {
+        t = 0.0;
+        s = std::max(0.0, std::min(1.0, -c / a));
+      } else if (t_nom >= e) {
+        t = 1.0;
+        s = std::max(0.0, std::min(1.0, (b - c) / a));
+      } else {
+        t = t_nom / e;
+      }
+    }
+  }
+
+  const Vec3 c1 = Add(p1, Scale(d1, s));
+  const Vec3 c2 = Add(p2, Scale(d2, t));
+  return DistanceSq(c1, c2);
+}
+
+bool ArePathSegmentsAdjacent(size_t a, size_t b, size_t segment_count, bool closed) {
+  if (a == b) return true;
+  if (a + 1 == b || b + 1 == a) return true;
+  if (closed && segment_count > 2) {
+    if ((a == 0 && b + 1 == segment_count) || (b == 0 && a + 1 == segment_count)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+struct PathFoldbackAnalysis {
+  bool overlap_likely = false;
+  bool near_overlap_likely = false;
+  double min_non_adjacent_segment_distance = std::numeric_limits<double>::infinity();
+};
+
+PathFoldbackAnalysis AnalyzeTubePathFoldback(const std::vector<Vec3>& path_points,
+                                             bool closed, double radius) {
+  PathFoldbackAnalysis result;
+  if (!(radius > 0.0) || path_points.size() < 4) return result;
+
+  const size_t segment_count =
+      closed ? path_points.size() : (path_points.size() > 1 ? path_points.size() - 1 : 0);
+  if (segment_count < 2) return result;
+
+  const double overlap_limit = std::max(1e-6, radius * 2.0);
+  const double overlap_limit_sq = overlap_limit * overlap_limit;
+  const double near_limit =
+      overlap_limit + std::max(1e-4, std::max(radius * 0.1, overlap_limit * 0.02));
+  const double near_limit_sq = near_limit * near_limit;
+
+  auto segment_point = [&](size_t index) -> std::pair<Vec3, Vec3> {
+    const size_t next = (index + 1) % path_points.size();
+    return {path_points[index], path_points[next]};
+  };
+
+  for (size_t i = 0; i < segment_count; ++i) {
+    const auto [a0, a1] = segment_point(i);
+    const Vec3 dir_a = Normalize(Subtract(a1, a0));
+    for (size_t j = i + 1; j < segment_count; ++j) {
+      if (ArePathSegmentsAdjacent(i, j, segment_count, closed)) continue;
+      const auto [b0, b1] = segment_point(j);
+      const Vec3 dir_b = Normalize(Subtract(b1, b0));
+      const double dist_sq = SegmentSegmentDistanceSq(a0, a1, b0, b1);
+      if (dist_sq < std::numeric_limits<double>::infinity()) {
+        result.min_non_adjacent_segment_distance =
+            std::min(result.min_non_adjacent_segment_distance, std::sqrt(dist_sq));
+      }
+      if (dist_sq <= overlap_limit_sq) {
+        result.overlap_likely = true;
+        result.near_overlap_likely = true;
+        return result;
+      }
+      const double dir_dot = Dot(dir_a, dir_b);
+      if (dist_sq <= near_limit_sq && dir_dot <= -0.25) {
+        result.near_overlap_likely = true;
+      }
+    }
+  }
+
+  if (!closed && path_points.size() >= 3) {
+    for (size_t i = 1; i + 1 < path_points.size(); ++i) {
+      const Vec3 prev = Subtract(path_points[i], path_points[i - 1]);
+      const Vec3 next = Subtract(path_points[i + 1], path_points[i]);
+      const double prev_len = Length(prev);
+      const double next_len = Length(next);
+      if (!(prev_len > kEps) || !(next_len > kEps)) continue;
+      const Vec3 prev_dir = Scale(prev, 1.0 / prev_len);
+      const Vec3 next_dir = Scale(next, 1.0 / next_len);
+      const double turn_dot = ClampUnit(Dot(prev_dir, next_dir));
+      if (turn_dot > -0.1) continue;
+      const double half_angle = 0.5 * std::acos(turn_dot);
+      const double tan_half = std::tan(half_angle);
+      if (!(tan_half > kEps)) continue;
+      const double intersection_dist = radius / tan_half;
+      if (intersection_dist >= std::min(prev_len, next_len) * 0.95) {
+        result.near_overlap_likely = true;
+        break;
+      }
+    }
+  }
+
+  return result;
 }
 
 void ComputeFrames(const std::vector<Vec3>& points, bool closed,
@@ -580,11 +744,17 @@ FastTubeResult BuildFastTube(const TubeBuildOptions& options) {
     }
   }
 
+  const PathFoldbackAnalysis foldback =
+      AnalyzeTubePathFoldback(smoothed, is_closed, options.radius);
   result.path_points = smoothed;
   result.closed = is_closed;
   result.pre_triangles =
       static_cast<uint32_t>(result.buffers.tri_verts.size() / 3);
   result.post_triangles = result.pre_triangles;
+  result.path_foldback_likely =
+      foldback.overlap_likely || foldback.near_overlap_likely;
+  result.min_non_adjacent_segment_distance =
+      foldback.min_non_adjacent_segment_distance;
 
   if (options.self_union) {
     manifold::MeshGL mesh;
@@ -921,7 +1091,10 @@ emscripten::val BuildSnapshotFromAuthoring(const AuthoringBuffers& buffers,
                                            uint32_t pre_triangles,
                                            uint32_t post_triangles,
                                            bool union_succeeded,
-                                           bool self_union_skipped) {
+                                           bool self_union_skipped,
+                                           bool self_intersection_likely,
+                                           bool path_foldback_likely,
+                                           double min_non_adjacent_segment_distance) {
   emscripten::val snapshot = emscripten::val::object();
   snapshot.set("numProp", kNumProp);
   snapshot.set("vertProperties", ToJsArray(buffers.vert_properties));
@@ -940,9 +1113,14 @@ emscripten::val BuildSnapshotFromAuthoring(const AuthoringBuffers& buffers,
   emscripten::val stats = emscripten::val::object();
   stats.set("preTriangles", pre_triangles);
   stats.set("postTriangles", post_triangles);
-  stats.set("selfIntersectionLikely", post_triangles > pre_triangles);
+  stats.set("selfIntersectionLikely", self_intersection_likely);
   stats.set("unionSucceeded", union_succeeded);
   stats.set("selfUnionSkipped", self_union_skipped);
+  stats.set("pathFoldbackLikely", path_foldback_likely);
+  stats.set("minNonAdjacentSegmentDistance",
+            std::isfinite(min_non_adjacent_segment_distance)
+                ? emscripten::val(min_non_adjacent_segment_distance)
+                : emscripten::val::null());
   snapshot.set("selfUnionStats", stats);
   return snapshot;
 }
@@ -1006,6 +1184,11 @@ emscripten::val BuildTubeAuthoringState(const emscripten::val& options) {
       (options["preferFast"].isUndefined() || options["preferFast"].isNull())
           ? true
           : options["preferFast"].as<bool>();
+  build_options.allow_slow_fallback =
+      (options["allowSlowFallback"].isUndefined() ||
+       options["allowSlowFallback"].isNull())
+          ? build_options.prefer_fast
+          : options["allowSlowFallback"].as<bool>();
   build_options.self_union =
       (options["selfUnion"].isUndefined() || options["selfUnion"].isNull())
           ? true
@@ -1015,14 +1198,45 @@ emscripten::val BuildTubeAuthoringState(const emscripten::val& options) {
     if (build_options.name.empty()) build_options.name = "Tube";
   }
 
+  bool fallback_from_fast = false;
+  std::string fallback_reason;
+  std::string fast_error;
+
   if (build_options.prefer_fast) {
-    FastTubeResult fast = BuildFastTube(build_options);
-    const TubeFaceLabels labels = MakeTubeFaceLabels(
-        build_options.name, fast.closed, build_options.inner_radius > 0.0);
-    return BuildSnapshotFromAuthoring(fast.buffers, labels, fast.path_points,
-                                      fast.closed, fast.pre_triangles,
-                                      fast.post_triangles, fast.union_succeeded,
-                                      !build_options.self_union);
+    try {
+      FastTubeResult fast = BuildFastTube(build_options);
+      if (!FastTubeNeedsSlowFallback(fast, build_options)) {
+        const TubeFaceLabels labels = MakeTubeFaceLabels(
+            build_options.name, fast.closed, build_options.inner_radius > 0.0);
+        emscripten::val snapshot =
+            BuildSnapshotFromAuthoring(fast.buffers, labels, fast.path_points,
+                                       fast.closed, fast.pre_triangles,
+                                       fast.post_triangles, fast.union_succeeded,
+                                       !build_options.self_union,
+                                       fast.path_foldback_likely ||
+                                           fast.post_triangles > fast.pre_triangles,
+                                       fast.path_foldback_likely,
+                                       fast.min_non_adjacent_segment_distance);
+        AnnotateTubeSnapshotBuildDecision(snapshot, "fast",
+                                          build_options.prefer_fast, false, "",
+                                          "");
+        return snapshot;
+      }
+      fallback_from_fast = true;
+      fallback_reason = fast.path_foldback_likely
+                            ? "path_foldback_proximity"
+                            : "self_intersection_likely";
+    } catch (const std::exception& error) {
+      if (!build_options.allow_slow_fallback) throw;
+      fallback_from_fast = true;
+      fallback_reason = "fast_builder_error";
+      fast_error = error.what();
+    } catch (...) {
+      if (!build_options.allow_slow_fallback) throw;
+      fallback_from_fast = true;
+      fallback_reason = "fast_builder_error";
+      fast_error = "native_fast_tube_error";
+    }
   }
 
   std::vector<Vec3> path_points;
@@ -1030,7 +1244,13 @@ emscripten::val BuildTubeAuthoringState(const emscripten::val& options) {
   manifold::MeshGL mesh = BuildSlowTubeMesh(build_options, path_points, closed);
   const TubeFaceLabels labels = MakeTubeFaceLabels(
       build_options.name, closed, build_options.inner_radius > 0.0);
-  return BuildSnapshotFromMesh(mesh, labels, path_points, closed);
+  emscripten::val snapshot =
+      BuildSnapshotFromMesh(mesh, labels, path_points, closed);
+  AnnotateTubeSnapshotBuildDecision(snapshot, "slow",
+                                    build_options.prefer_fast,
+                                    fallback_from_fast, fallback_reason,
+                                    fast_error);
+  return snapshot;
 }
 
 }  // namespace manifoldplus
