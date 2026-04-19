@@ -54,29 +54,20 @@ struct AuthoringBuffers {
   std::vector<float> vert_properties;
   std::vector<uint32_t> tri_verts;
   std::vector<uint32_t> tri_ids;
-  std::unordered_map<std::string, uint32_t> vert_key_to_index;
 
-  uint32_t GetPointIndex(const Vec3& point) {
-    std::ostringstream stream;
-    stream.precision(std::numeric_limits<double>::max_digits10);
-    stream << point.x << ',' << point.y << ',' << point.z;
-    const std::string key = stream.str();
-    const auto found = vert_key_to_index.find(key);
-    if (found != vert_key_to_index.end()) return found->second;
-
+  uint32_t AddVertex(const Vec3& point) {
     const uint32_t index = static_cast<uint32_t>(vert_properties.size() / 3);
     vert_properties.push_back(static_cast<float>(point.x));
     vert_properties.push_back(static_cast<float>(point.y));
     vert_properties.push_back(static_cast<float>(point.z));
-    vert_key_to_index.emplace(key, index);
     return index;
   }
 
-  void AddTriangle(uint32_t face_id, const Vec3& a, const Vec3& b,
-                   const Vec3& c) {
-    tri_verts.push_back(GetPointIndex(a));
-    tri_verts.push_back(GetPointIndex(b));
-    tri_verts.push_back(GetPointIndex(c));
+  void AddTriangleIndices(uint32_t face_id, uint32_t a, uint32_t b,
+                          uint32_t c) {
+    tri_verts.push_back(a);
+    tri_verts.push_back(b);
+    tri_verts.push_back(c);
     tri_ids.push_back(face_id);
   }
 };
@@ -587,26 +578,49 @@ void ComputeFrames(const std::vector<Vec3>& points, bool closed,
   }
 }
 
-void AddTriangleOriented(AuthoringBuffers& buffers, uint32_t face_id,
-                         const Vec3& a, const Vec3& b, const Vec3& c,
-                         const Vec3* outward_dir) {
+void AddTriangleIndexedOriented(AuthoringBuffers& buffers, uint32_t face_id,
+                                uint32_t ia, const Vec3& a, uint32_t ib,
+                                const Vec3& b, uint32_t ic, const Vec3& c,
+                                const Vec3* outward_dir) {
   if (outward_dir == nullptr || LengthSq(*outward_dir) < 1e-10) {
-    buffers.AddTriangle(face_id, a, b, c);
+    buffers.AddTriangleIndices(face_id, ia, ib, ic);
     return;
   }
   const Vec3 normal = Cross(Subtract(b, a), Subtract(c, a));
   if (Dot(normal, *outward_dir) < 0.0) {
-    buffers.AddTriangle(face_id, a, c, b);
+    buffers.AddTriangleIndices(face_id, ia, ic, ib);
   } else {
-    buffers.AddTriangle(face_id, a, b, c);
+    buffers.AddTriangleIndices(face_id, ia, ib, ic);
   }
 }
 
-void AddQuadOriented(AuthoringBuffers& buffers, uint32_t face_id, const Vec3& a,
-                     const Vec3& b, const Vec3& c, const Vec3& d,
-                     const Vec3* outward_dir) {
-  AddTriangleOriented(buffers, face_id, a, b, c, outward_dir);
-  AddTriangleOriented(buffers, face_id, a, c, d, outward_dir);
+void AddQuadIndexedOriented(AuthoringBuffers& buffers, uint32_t face_id,
+                            uint32_t ia, const Vec3& a, uint32_t ib,
+                            const Vec3& b, uint32_t ic, const Vec3& c,
+                            uint32_t id, const Vec3& d,
+                            const Vec3* outward_dir) {
+  AddTriangleIndexedOriented(buffers, face_id, ia, a, ib, b, ic, c,
+                             outward_dir);
+  AddTriangleIndexedOriented(buffers, face_id, ia, a, ic, c, id, d,
+                             outward_dir);
+}
+
+void BuildRingVertices(AuthoringBuffers& buffers, const Vec3& center,
+                       const Vec3& normal, const Vec3& binormal,
+                       double radius, const std::vector<double>& cos_table,
+                       const std::vector<double>& sin_table,
+                       std::vector<Vec3>& out_points,
+                       std::vector<uint32_t>& out_indices) {
+  const size_t segments = cos_table.size();
+  out_points.resize(segments);
+  out_indices.resize(segments);
+  for (size_t i = 0; i < segments; ++i) {
+    const Vec3 offset = Add(Scale(normal, cos_table[i]),
+                            Scale(binormal, sin_table[i]));
+    const Vec3 point = Add(center, Scale(offset, radius));
+    out_points[i] = point;
+    out_indices[i] = buffers.AddVertex(point);
+  }
 }
 
 FastTubeResult BuildFastTube(const TubeBuildOptions& options) {
@@ -668,52 +682,94 @@ FastTubeResult BuildFastTube(const TubeBuildOptions& options) {
   }
 
   const int segments = options.resolution;
-  std::vector<std::vector<Vec3>> outer_rings(smoothed.size());
-  std::vector<std::vector<Vec3>> inner_rings(
-      options.inner_radius > 0.0 ? smoothed.size() : 0);
-
-  for (size_t i = 0; i < smoothed.size(); ++i) {
-    outer_rings[i].reserve(segments);
-    if (options.inner_radius > 0.0) inner_rings[i].reserve(segments);
-    for (int j = 0; j < segments; ++j) {
-      const double theta =
-          (static_cast<double>(j) / static_cast<double>(segments)) * 2.0 * kPi;
-      const double cos_theta = std::cos(theta);
-      const double sin_theta = std::sin(theta);
-      const Vec3 offset =
-          Add(Scale(normals[i], cos_theta), Scale(binormals[i], sin_theta));
-      outer_rings[i].push_back(Add(smoothed[i], Scale(offset, options.radius)));
-      if (options.inner_radius > 0.0) {
-        inner_rings[i].push_back(
-            Add(smoothed[i], Scale(offset, options.inner_radius)));
-      }
-    }
+  std::vector<double> cos_table(segments);
+  std::vector<double> sin_table(segments);
+  for (int j = 0; j < segments; ++j) {
+    const double theta =
+        (static_cast<double>(j) / static_cast<double>(segments)) * 2.0 * kPi;
+    cos_table[j] = std::cos(theta);
+    sin_table[j] = std::sin(theta);
   }
 
-  const size_t ring_count = is_closed ? outer_rings.size() : outer_rings.size() - 1;
-  for (size_t i = 0; i < ring_count; ++i) {
-    const size_t next_idx = (i + 1) % outer_rings.size();
-    Vec3 path_dir = Normalize(Subtract(smoothed[next_idx], smoothed[i]));
+  std::vector<Vec3> first_outer_points;
+  std::vector<uint32_t> first_outer_indices;
+  std::vector<Vec3> prev_outer_points;
+  std::vector<uint32_t> prev_outer_indices;
+  BuildRingVertices(result.buffers, smoothed.front(), normals.front(),
+                    binormals.front(), options.radius, cos_table, sin_table,
+                    prev_outer_points, prev_outer_indices);
+  first_outer_points = prev_outer_points;
+  first_outer_indices = prev_outer_indices;
+
+  std::vector<Vec3> first_inner_points;
+  std::vector<uint32_t> first_inner_indices;
+  std::vector<Vec3> prev_inner_points;
+  std::vector<uint32_t> prev_inner_indices;
+  if (options.inner_radius > 0.0) {
+    BuildRingVertices(result.buffers, smoothed.front(), normals.front(),
+                      binormals.front(), options.inner_radius, cos_table,
+                      sin_table, prev_inner_points, prev_inner_indices);
+    first_inner_points = prev_inner_points;
+    first_inner_indices = prev_inner_indices;
+  }
+
+  std::vector<Vec3> curr_outer_points;
+  std::vector<uint32_t> curr_outer_indices;
+  std::vector<Vec3> curr_inner_points;
+  std::vector<uint32_t> curr_inner_indices;
+  for (size_t i = 1; i < smoothed.size(); ++i) {
+    BuildRingVertices(result.buffers, smoothed[i], normals[i], binormals[i],
+                      options.radius, cos_table, sin_table, curr_outer_points,
+                      curr_outer_indices);
+    const Vec3 path_dir = Normalize(Subtract(smoothed[i], smoothed[i - 1]));
     for (int j = 0; j < segments; ++j) {
       const int j1 = (j + 1) % segments;
-      AddQuadOriented(result.buffers, labels.outer_id, outer_rings[i][j],
-                      outer_rings[i][j1], outer_rings[next_idx][j1],
-                      outer_rings[next_idx][j], &path_dir);
+      AddQuadIndexedOriented(
+          result.buffers, labels.outer_id, prev_outer_indices[j],
+          prev_outer_points[j], prev_outer_indices[j1], prev_outer_points[j1],
+          curr_outer_indices[j1], curr_outer_points[j1], curr_outer_indices[j],
+          curr_outer_points[j], &path_dir);
+    }
+    prev_outer_points.swap(curr_outer_points);
+    prev_outer_indices.swap(curr_outer_indices);
+
+    if (options.inner_radius > 0.0) {
+      BuildRingVertices(result.buffers, smoothed[i], normals[i], binormals[i],
+                        options.inner_radius, cos_table, sin_table,
+                        curr_inner_points, curr_inner_indices);
+      const Vec3 inward_dir = Scale(path_dir, -1.0);
+      for (int j = 0; j < segments; ++j) {
+        const int j1 = (j + 1) % segments;
+        AddQuadIndexedOriented(
+            result.buffers, labels.inner_id, prev_inner_indices[j],
+            prev_inner_points[j], curr_inner_indices[j], curr_inner_points[j],
+            curr_inner_indices[j1], curr_inner_points[j1],
+            prev_inner_indices[j1], prev_inner_points[j1], &inward_dir);
+      }
+      prev_inner_points.swap(curr_inner_points);
+      prev_inner_indices.swap(curr_inner_indices);
     }
   }
 
-  if (options.inner_radius > 0.0) {
-    const size_t inner_ring_count =
-        is_closed ? inner_rings.size() : inner_rings.size() - 1;
-    for (size_t i = 0; i < inner_ring_count; ++i) {
-      const size_t next_idx = (i + 1) % inner_rings.size();
-      const Vec3 inward_dir =
-          Scale(Normalize(Subtract(smoothed[next_idx], smoothed[i])), -1.0);
+  if (is_closed) {
+    const Vec3 close_dir = Normalize(Subtract(smoothed.front(), smoothed.back()));
+    for (int j = 0; j < segments; ++j) {
+      const int j1 = (j + 1) % segments;
+      AddQuadIndexedOriented(
+          result.buffers, labels.outer_id, prev_outer_indices[j],
+          prev_outer_points[j], prev_outer_indices[j1], prev_outer_points[j1],
+          first_outer_indices[j1], first_outer_points[j1], first_outer_indices[j],
+          first_outer_points[j], &close_dir);
+    }
+    if (options.inner_radius > 0.0) {
+      const Vec3 inward_close_dir = Scale(close_dir, -1.0);
       for (int j = 0; j < segments; ++j) {
         const int j1 = (j + 1) % segments;
-        AddQuadOriented(result.buffers, labels.inner_id, inner_rings[i][j],
-                        inner_rings[next_idx][j], inner_rings[next_idx][j1],
-                        inner_rings[i][j1], &inward_dir);
+        AddQuadIndexedOriented(
+            result.buffers, labels.inner_id, prev_inner_indices[j],
+            prev_inner_points[j], first_inner_indices[j], first_inner_points[j],
+            first_inner_indices[j1], first_inner_points[j1],
+            prev_inner_indices[j1], prev_inner_points[j1], &inward_close_dir);
       }
     }
   }
@@ -723,23 +779,34 @@ FastTubeResult BuildFastTube(const TubeBuildOptions& options) {
     const Vec3 end_dir = tangents.back();
     const Vec3 start_center = smoothed.front();
     const Vec3 end_center = smoothed.back();
+    const uint32_t start_center_index =
+        options.inner_radius > 0.0 ? 0u : result.buffers.AddVertex(start_center);
+    const uint32_t end_center_index =
+        options.inner_radius > 0.0 ? 0u : result.buffers.AddVertex(end_center);
 
     for (int j = 0; j < segments; ++j) {
       const int j1 = (j + 1) % segments;
       if (options.inner_radius > 0.0) {
-        AddQuadOriented(result.buffers, labels.cap_start_id, outer_rings.front()[j],
-                        outer_rings.front()[j1], inner_rings.front()[j1],
-                        inner_rings.front()[j], &start_dir);
-        AddQuadOriented(result.buffers, labels.cap_end_id,
-                        outer_rings.back()[j], outer_rings.back()[j1],
-                        inner_rings.back()[j1], inner_rings.back()[j], &end_dir);
+        AddQuadIndexedOriented(
+            result.buffers, labels.cap_start_id, first_outer_indices[j],
+            first_outer_points[j], first_outer_indices[j1],
+            first_outer_points[j1], first_inner_indices[j1],
+            first_inner_points[j1], first_inner_indices[j], first_inner_points[j],
+            &start_dir);
+        AddQuadIndexedOriented(
+            result.buffers, labels.cap_end_id, prev_outer_indices[j],
+            prev_outer_points[j], prev_outer_indices[j1], prev_outer_points[j1],
+            prev_inner_indices[j1], prev_inner_points[j1], prev_inner_indices[j],
+            prev_inner_points[j], &end_dir);
       } else {
-        AddTriangleOriented(result.buffers, labels.cap_start_id, start_center,
-                            outer_rings.front()[j], outer_rings.front()[j1],
-                            &start_dir);
-        AddTriangleOriented(result.buffers, labels.cap_end_id, end_center,
-                            outer_rings.back()[j], outer_rings.back()[j1],
-                            &end_dir);
+        AddTriangleIndexedOriented(
+            result.buffers, labels.cap_start_id, start_center_index, start_center,
+            first_outer_indices[j], first_outer_points[j], first_outer_indices[j1],
+            first_outer_points[j1], &start_dir);
+        AddTriangleIndexedOriented(
+            result.buffers, labels.cap_end_id, end_center_index, end_center,
+            prev_outer_indices[j], prev_outer_points[j], prev_outer_indices[j1],
+            prev_outer_points[j1], &end_dir);
       }
     }
   }
@@ -772,7 +839,6 @@ FastTubeResult BuildFastTube(const TubeBuildOptions& options) {
         result.buffers.vert_properties = combined_mesh.vertProperties;
         result.buffers.tri_verts = combined_mesh.triVerts;
         result.buffers.tri_ids = combined_mesh.faceID;
-        result.buffers.vert_key_to_index.clear();
         result.post_triangles = static_cast<uint32_t>(combined_mesh.NumTri());
         result.union_succeeded = true;
       }
@@ -842,12 +908,8 @@ manifold::Manifold BuildHullChain(const std::vector<Vec3>& points, double radius
   if (hulls.empty()) {
     throw std::runtime_error("Unable to build tube hulls from the supplied path.");
   }
-
-  manifold::Manifold combined = hulls.front();
-  for (size_t i = 1; i < hulls.size(); ++i) {
-    combined += hulls[i];
-  }
-  return combined;
+  if (hulls.size() == 1) return hulls.front();
+  return manifold::Manifold::BatchBoolean(hulls, manifold::OpType::Add);
 }
 
 Vec3 FirstTangent(const std::vector<Vec3>& points) {
