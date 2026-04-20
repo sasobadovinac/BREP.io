@@ -2682,11 +2682,20 @@ export class SchemaForm {
         gap: 6px;
       }
 
+      .field-row-boolean {
+        gap: 0;
+      }
+
       .label {
         color: var(--muted);
       }
 
+      .label-inline-hidden {
+        display: none;
+      }
+
       .control-wrap { display: flex; flex-direction: column; gap: 6px; }
+      .control-wrap-boolean { gap: 0; }
       .control-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
       .control-main { min-width: 0; }
       .control-main.expr-disabled { opacity: 0.45; pointer-events: none; }
@@ -2796,7 +2805,27 @@ export class SchemaForm {
 
       .checkbox {
         width: 18px; height: 18px;
+        min-width: 18px; min-height: 18px;
+        max-width: 18px; max-height: 18px;
+        flex: 0 0 18px;
         accent-color: var(--accent);
+      }
+
+      .checkbox-inline-label {
+        display: inline-flex;
+        align-items: flex-start;
+        gap: 10px;
+        min-width: 0;
+        max-width: 100%;
+        cursor: pointer;
+        user-select: none;
+      }
+
+      .checkbox-inline-text {
+        flex: 1 1 auto;
+        min-width: 0;
+        color: var(--text);
+        line-height: 1.3;
       }
 
       .ref-select-placeholder {
