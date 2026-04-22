@@ -39,6 +39,7 @@ import { PMIViewsWidget } from './pmi/PMIViewsWidget.js';
 import { SceneListing } from './SceneListing.js';
 import { SelectionFilter } from './SelectionFilter.js';
 import { SelectionState } from './SelectionState.js';
+import { SimulationHistoryWidget } from './simulation/SimulationHistoryWidget.js';
 import { Sheet2DEditorWindow } from './sheets/Sheet2DEditorWindow.js';
 import { Sheet2DWidget } from './sheets/Sheet2DWidget.js';
 import { SketchMode3D } from './sketcher/SketchMode3D.js';
@@ -1935,12 +1936,19 @@ export class Viewer {
             title: 'PMI Views',
             section: pmiViewsSection,
             source: 'builtin',
-            global: true,
+            workbenches: ['MODELING', 'IMPORT', 'SURFACING', 'SHEET_METAL', 'ASSEMBLIES', 'WIRE_HARNESS', 'PMI', 'ALL'],
         });
 
         this.sheet2DWidget = new Sheet2DWidget(this);
         const sheetsSection = await this.accordion.addSection("2D Sheets");
         sheetsSection.uiElement.appendChild(this.sheet2DWidget.uiElement);
+        this._registerWorkbenchPanel({
+            id: 'sheets2D',
+            title: '2D Sheets',
+            section: sheetsSection,
+            source: 'builtin',
+            workbenches: ['MODELING', 'IMPORT', 'SURFACING', 'SHEET_METAL', 'ASSEMBLIES', 'WIRE_HARNESS', 'PMI', 'ALL'],
+        });
 
         this.wireHarnessConnectionsWidget = new WireHarnessConnectionsWidget(this);
         const wireHarnessSection = await this.accordion.addSection('Wire Harness');
@@ -1952,10 +1960,28 @@ export class Viewer {
             source: 'builtin',
         });
 
+        this.simulationHistoryWidget = new SimulationHistoryWidget(this);
+        const simulationSection = await this.accordion.addSection('Simulation');
+        simulationSection.uiElement.appendChild(this.simulationHistoryWidget.uiElement);
+        this._registerWorkbenchPanel({
+            id: 'simulationHistory',
+            title: 'Simulation',
+            section: simulationSection,
+            source: 'builtin',
+            workbenches: ['SIMULATION'],
+        });
+
         // CADmaterials (Settings panel)
         this.cadMaterialsUi = await new CADmaterialWidget(this);
         const displaySection = await this.accordion.addSection("Display Settings");
         await displaySection.uiElement.appendChild(this.cadMaterialsUi.uiElement);
+        this._registerWorkbenchPanel({
+            id: 'displaySettings',
+            title: 'Display Settings',
+            section: displaySection,
+            source: 'builtin',
+            workbenches: ['MODELING', 'IMPORT', 'SURFACING', 'SHEET_METAL', 'ASSEMBLIES', 'WIRE_HARNESS', 'PMI', 'ALL'],
+        });
 
         // From this point on, plugin UI can be added immediately,
         // and should be inserted just before the "Display Settings" panel.
@@ -1974,6 +2000,13 @@ export class Viewer {
         const pluginsSection = await this.accordion.addSection('Plugins');
         const pluginsWidget = new PluginsWidget(this);
         pluginsSection.uiElement.appendChild(pluginsWidget.uiElement);
+        this._registerWorkbenchPanel({
+            id: 'plugins',
+            title: 'Plugins',
+            section: pluginsSection,
+            source: 'builtin',
+            workbenches: ['MODELING', 'IMPORT', 'SURFACING', 'SHEET_METAL', 'ASSEMBLIES', 'WIRE_HARNESS', 'PMI', 'ALL'],
+        });
 
         await this.accordion.collapseAll();
         await this.accordion.expandSection("Scene Manager");
@@ -2133,6 +2166,9 @@ export class Viewer {
                 this.sheet2DWidget._renderList?.();
             }
             this._sheet2DEditorWindow?.refreshFromHistory?.();
+        } catch { }
+        try {
+            this.simulationHistoryWidget?.refreshFromHistory?.();
         } catch { }
         try {
             if (this.wireHarnessConnectionsWidget) {

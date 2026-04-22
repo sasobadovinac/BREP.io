@@ -28,6 +28,11 @@ function cloneVec3(value, fallback = [0, 0, 0]) {
   ];
 }
 
+function normalizeText(value, fallback = '') {
+  const next = String(value == null ? '' : value).trim();
+  return next || fallback;
+}
+
 function normalizeTransform(value) {
   const raw = value && typeof value === 'object' ? value : {};
   return {
@@ -144,10 +149,19 @@ export class SimulationWorkbenchManager {
     this._vhacdLoadPromise = null;
     this._physicsWorld = null;
     this._bodyState = new Map();
+    this._listeners = new Set();
+    this._removeStateManagerListener = null;
+    this._isPlaying = false;
+    this._motionState = new Map();
+    this._movedSolidIds = new Set();
     this._raf = 0;
     this._lastStepTime = 0;
     this._scratch = {
       parentInverse: new THREE.Matrix4(),
+      parentWorldMatrix: new THREE.Matrix4(),
+      localMatrix: new THREE.Matrix4(),
+      worldMatrix: new THREE.Matrix4(),
+      deltaMatrix: new THREE.Matrix4(),
       worldPosition: new THREE.Vector3(),
       localPosition: new THREE.Vector3(),
       worldQuaternion: new THREE.Quaternion(),
@@ -155,10 +169,17 @@ export class SimulationWorkbenchManager {
       parentQuaternionInverse: new THREE.Quaternion(),
       box: new THREE.Box3(),
       center: new THREE.Vector3(),
+      axis: new THREE.Vector3(),
+      translation: new THREE.Vector3(),
     };
+    this._bindStateManager();
   }
 
   dispose() {
+    if (typeof this._removeStateManagerListener === 'function') {
+      try { this._removeStateManagerListener(); } catch {}
+    }
+    this._removeStateManagerListener = null;
     this.setActive(false);
   }
 
@@ -168,6 +189,56 @@ export class SimulationWorkbenchManager {
 
   isSimulationWorkbenchActive() {
     return this.viewer?._getActiveWorkbenchId?.() === 'SIMULATION';
+  }
+
+  addListener(listener) {
+    if (typeof listener !== 'function') return () => {};
+    this._listeners.add(listener);
+    return () => {
+      try { this._listeners.delete(listener); } catch {}
+    };
+  }
+
+  removeListener(listener) {
+    if (typeof listener !== 'function') return;
+    try { this._listeners.delete(listener); } catch {}
+  }
+
+  isPlaying() {
+    return this._isPlaying;
+  }
+
+  setPlaying(playing) {
+    const next = !!playing;
+    if (next === this._isPlaying) return this._isPlaying;
+    this._isPlaying = next;
+    if (this._active) {
+      void this._rebuildPhysicsWorld();
+    }
+    this._emit();
+    return this._isPlaying;
+  }
+
+  resetSimulationState() {
+    this._stopTransformSession();
+    this._destroyPhysicsWorld();
+    this._isPlaying = false;
+    this._movedSolidIds.clear();
+    this._motionState.clear();
+    for (const solid of this._listSceneSolids()) {
+      this._runtimeState.set(solid.uuid, normalizeTransform(null));
+      this.setStoredTransform(solid, null);
+    }
+    this._restoreBaseLocalPoses();
+    for (const solid of this._listSceneSolids()) {
+      this._syncProxyGroupTransform(solid);
+    }
+    if (this._active) {
+      this._resetMotionRuntime();
+      void this._rebuildPhysicsWorld();
+    }
+    this._emit();
+    try { this.viewer?.render?.(); } catch {}
   }
 
   getSolidFixed(solid) {
@@ -223,10 +294,12 @@ export class SimulationWorkbenchManager {
       this._captureBaseLocalPoses();
       this._captureSourceVisibility();
       this._hydrateRuntimeStateFromMetadata();
+      this._resetMotionRuntime();
       this._applyRuntimeTransforms();
       this._setSourceSolidsVisible(true);
       void this._prepareSimulationAssets();
       this._ensurePhysicsLoop();
+      this._emit();
       return;
     }
     this._stopTransformSession();
@@ -239,6 +312,10 @@ export class SimulationWorkbenchManager {
     this._baseLocalPose.clear();
     this._sourceVisibility.clear();
     this._decompositionCache.clear();
+    this._motionState.clear();
+    this._movedSolidIds.clear();
+    this._isPlaying = false;
+    this._emit();
   }
 
   toggleSolidTransform(solid) {
@@ -510,7 +587,9 @@ export class SimulationWorkbenchManager {
     for (const solid of this._listSceneSolids()) {
       const bodyDesc = (selectedSolid && solid === selectedSolid)
         ? rapier.RigidBodyDesc.kinematicPositionBased()
-        : (this.getSolidFixed(solid) ? rapier.RigidBodyDesc.fixed() : rapier.RigidBodyDesc.dynamic());
+        : (this._isSolidMotionDriven(solid)
+          ? rapier.RigidBodyDesc.kinematicPositionBased()
+          : (this.getSolidFixed(solid) ? rapier.RigidBodyDesc.fixed() : rapier.RigidBodyDesc.dynamic()));
       const position = solid.getWorldPosition(new THREE.Vector3());
       const quaternion = solid.getWorldQuaternion(new THREE.Quaternion());
       bodyDesc.setTranslation(position.x, position.y, position.z);
@@ -580,6 +659,10 @@ export class SimulationWorkbenchManager {
     world.timestep = dt;
 
     const selectedSolid = this._transformSession?.solid || null;
+    let changed = false;
+    if (this._isPlaying) {
+      changed = this._applyMotionStep(dt) || changed;
+    }
     if (selectedSolid) {
       const bodyState = this._bodyState.get(selectedSolid.uuid);
       if (bodyState?.body) {
@@ -589,13 +672,27 @@ export class SimulationWorkbenchManager {
         bodyState.body.setNextKinematicRotation(worldQuaternion);
       }
     }
+    if (this._isPlaying) {
+      for (const solid of this._listSceneSolids()) {
+        if (!this._isSolidMotionDriven(solid)) continue;
+        const bodyState = this._bodyState.get(solid.uuid);
+        if (!bodyState?.body) continue;
+        const worldPosition = solid.getWorldPosition(new THREE.Vector3());
+        const worldQuaternion = solid.getWorldQuaternion(new THREE.Quaternion());
+        bodyState.body.setNextKinematicTranslation(worldPosition);
+        bodyState.body.setNextKinematicRotation(worldQuaternion);
+      }
+    }
 
     world.step();
-    let changed = false;
     for (const bodyState of this._bodyState.values()) {
       const { solid, body } = bodyState;
       if (!solid || !body) continue;
       if (selectedSolid && solid === selectedSolid) {
+        this._syncProxyGroupTransform(solid);
+        continue;
+      }
+      if (this._isSolidMotionDriven(solid)) {
         this._syncProxyGroupTransform(solid);
         continue;
       }
@@ -608,6 +705,7 @@ export class SimulationWorkbenchManager {
       if (!translation || !rotation) continue;
       this._setSolidWorldPose(solid, translation, rotation);
       this._updateRuntimeTransformFromSolid(solid, { persist: false });
+      this._movedSolidIds.add(solid.uuid);
       changed = true;
     }
     if (changed) {
@@ -736,5 +834,221 @@ export class SimulationWorkbenchManager {
       if (obj?.type === 'SOLID') solids.push(obj);
     });
     return solids;
+  }
+
+  _bindStateManager() {
+    const manager = this.viewer?.partHistory?.simulationStateManager;
+    if (!manager?.addListener) return;
+    this._removeStateManagerListener = manager.addListener(() => {
+      this._reconcileMotionState();
+      if (this._active) {
+        void this._rebuildPhysicsWorld();
+      }
+      this._emit();
+    });
+  }
+
+  _emit() {
+    if (!this._listeners || this._listeners.size === 0) return;
+    const payload = {
+      active: this._active,
+      playing: this._isPlaying,
+      manager: this,
+    };
+    for (const listener of Array.from(this._listeners)) {
+      try { listener(payload); } catch {}
+    }
+  }
+
+  _getMotionEntries() {
+    return Array.isArray(this.viewer?.partHistory?.simulationStateManager?.getMotions?.())
+      ? this.viewer.partHistory.simulationStateManager.getMotions()
+      : [];
+  }
+
+  _resetMotionRuntime() {
+    this._motionState.clear();
+    for (const motion of this._getMotionEntries()) {
+      this._motionState.set(motion.id, { progress: 0, completed: false });
+    }
+  }
+
+  _reconcileMotionState() {
+    const activeIds = new Set();
+    for (const motion of this._getMotionEntries()) {
+      activeIds.add(motion.id);
+      if (!this._motionState.has(motion.id)) {
+        this._motionState.set(motion.id, { progress: 0, completed: false });
+      }
+    }
+    for (const id of Array.from(this._motionState.keys())) {
+      if (!activeIds.has(id)) this._motionState.delete(id);
+    }
+  }
+
+  _isSolidMotionDriven(solid) {
+    if (!solid || !this._isPlaying) return false;
+    const name = normalizeText(solid.name, '');
+    if (!name) return false;
+    return this._getMotionEntries().some((motion) => normalizeText(motion?.solidName, '') === name);
+  }
+
+  _applyMotionStep(dt) {
+    let changed = false;
+    for (const motion of this._getMotionEntries()) {
+      const solid = this._resolveMotionSolid(motion);
+      if (!solid) continue;
+      if (motion.type === 'linear') changed = this._applyLinearMotionStep(solid, motion, dt) || changed;
+      else changed = this._applyRotationMotionStep(solid, motion, dt) || changed;
+    }
+    return changed;
+  }
+
+  _resolveMotionSolid(motion) {
+    const name = normalizeText(motion?.solidName, '');
+    if (!name) return null;
+    const object = this.viewer?.partHistory?.getObjectByName?.(name) || null;
+    return object?.type === 'SOLID' ? object : null;
+  }
+
+  _resolveMotionAxis(motion) {
+    const axisRef = motion?.axisRef && typeof motion.axisRef === 'object' ? motion.axisRef : null;
+    if (!axisRef) return null;
+    const objectName = normalizeText(axisRef.objectName, '');
+    const object = objectName ? this.viewer?.partHistory?.getObjectByName?.(objectName) : null;
+    const live = object ? this._extractAxisPointsFromObject(object) : null;
+    const start = live?.start || axisRef.axisStart;
+    const end = live?.end || axisRef.axisEnd;
+    if (!Array.isArray(start) || !Array.isArray(end) || start.length < 3 || end.length < 3) return null;
+    const startVec = new THREE.Vector3(Number(start[0]) || 0, Number(start[1]) || 0, Number(start[2]) || 0);
+    const endVec = new THREE.Vector3(Number(end[0]) || 0, Number(end[1]) || 0, Number(end[2]) || 0);
+    if (startVec.distanceToSquared(endVec) <= 1e-12) return null;
+    return { start: startVec, end: endVec };
+  }
+
+  _extractAxisPointsFromObject(object) {
+    if (!object) return null;
+    try {
+      if (typeof object.points === 'function') {
+        const points = object.points(true);
+        if (Array.isArray(points) && points.length >= 2) {
+          const first = points[0];
+          const last = points[points.length - 1];
+          return {
+            start: [Number(first?.x) || 0, Number(first?.y) || 0, Number(first?.z) || 0],
+            end: [Number(last?.x) || 0, Number(last?.y) || 0, Number(last?.z) || 0],
+          };
+        }
+      }
+    } catch {}
+    try {
+      object.updateMatrixWorld?.(true);
+      const attr = object.geometry?.getAttribute?.('position');
+      if (!attr || attr.count < 2) return null;
+      const first = new THREE.Vector3(attr.getX(0), attr.getY(0), attr.getZ(0)).applyMatrix4(object.matrixWorld);
+      const lastIndex = attr.count - 1;
+      const last = new THREE.Vector3(attr.getX(lastIndex), attr.getY(lastIndex), attr.getZ(lastIndex)).applyMatrix4(object.matrixWorld);
+      return {
+        start: [first.x, first.y, first.z],
+        end: [last.x, last.y, last.z],
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  _applyRotationMotionStep(solid, motion, dt) {
+    const state = this._motionState.get(motion.id) || { progress: 0, completed: false };
+    if (state.completed) return;
+    const axis = this._resolveMotionAxis(motion);
+    if (!axis) return;
+    const speedDeg = Number(motion?.speed);
+    if (!Number.isFinite(speedDeg) || Math.abs(speedDeg) <= 1e-9) return;
+    let deltaDeg = speedDeg * dt;
+    const limitDeg = Number.isFinite(Number(motion?.angle)) ? Number(motion.angle) : null;
+    if (limitDeg != null) {
+      const remaining = limitDeg - state.progress;
+      if (Math.abs(remaining) <= 1e-9) {
+        state.completed = true;
+        this._motionState.set(motion.id, state);
+        return false;
+      }
+      if (Math.sign(deltaDeg || 1) !== Math.sign(remaining || 1)) {
+        deltaDeg = Math.sign(remaining || 1) * Math.abs(deltaDeg);
+      }
+      if (Math.abs(deltaDeg) > Math.abs(remaining)) deltaDeg = remaining;
+    }
+    if (Math.abs(deltaDeg) <= 1e-9) return false;
+    this._rotateSolidAroundWorldAxis(solid, axis.start, axis.end, THREE.MathUtils.degToRad(deltaDeg));
+    state.progress += deltaDeg;
+    if (limitDeg != null && Math.abs(limitDeg - state.progress) <= 1e-9) state.completed = true;
+    this._motionState.set(motion.id, state);
+    this._updateRuntimeTransformFromSolid(solid, { persist: false });
+    this._movedSolidIds.add(solid.uuid);
+    return true;
+  }
+
+  _applyLinearMotionStep(solid, motion, dt) {
+    const state = this._motionState.get(motion.id) || { progress: 0, completed: false };
+    if (state.completed) return;
+    const axis = this._resolveMotionAxis(motion);
+    if (!axis) return;
+    const speed = Number(motion?.speed);
+    if (!Number.isFinite(speed) || Math.abs(speed) <= 1e-9) return;
+    let delta = speed * dt;
+    const limit = Number.isFinite(Number(motion?.distance)) ? Number(motion.distance) : null;
+    if (limit != null) {
+      const remaining = limit - state.progress;
+      if (Math.abs(remaining) <= 1e-9) {
+        state.completed = true;
+        this._motionState.set(motion.id, state);
+        return false;
+      }
+      if (Math.sign(delta || 1) !== Math.sign(remaining || 1)) {
+        delta = Math.sign(remaining || 1) * Math.abs(delta);
+      }
+      if (Math.abs(delta) > Math.abs(remaining)) delta = remaining;
+    }
+    if (Math.abs(delta) <= 1e-9) return false;
+    this._translateSolidAlongWorldAxis(solid, axis.start, axis.end, delta);
+    state.progress += delta;
+    if (limit != null && Math.abs(limit - state.progress) <= 1e-9) state.completed = true;
+    this._motionState.set(motion.id, state);
+    this._updateRuntimeTransformFromSolid(solid, { persist: false });
+    this._movedSolidIds.add(solid.uuid);
+    return true;
+  }
+
+  _rotateSolidAroundWorldAxis(solid, axisStart, axisEnd, angleRad) {
+    const parent = solid.parent || this.viewer?.scene || null;
+    const scratch = this._scratch;
+    scratch.axis.copy(axisEnd).sub(axisStart).normalize();
+    scratch.parentWorldMatrix.copy(parent?.matrixWorld || new THREE.Matrix4());
+    scratch.parentInverse.copy(scratch.parentWorldMatrix).invert();
+    scratch.worldMatrix.copy(solid.matrixWorld);
+    scratch.deltaMatrix.makeTranslation(axisStart.x, axisStart.y, axisStart.z);
+    scratch.deltaMatrix.multiply(new THREE.Matrix4().makeRotationAxis(scratch.axis, angleRad));
+    scratch.deltaMatrix.multiply(new THREE.Matrix4().makeTranslation(-axisStart.x, -axisStart.y, -axisStart.z));
+    scratch.worldMatrix.premultiply(scratch.deltaMatrix);
+    scratch.localMatrix.copy(scratch.parentInverse).multiply(scratch.worldMatrix);
+    scratch.localMatrix.decompose(solid.position, solid.quaternion, solid.scale);
+    solid.updateMatrixWorld?.(true);
+    this._syncProxyGroupTransform(solid);
+  }
+
+  _translateSolidAlongWorldAxis(solid, axisStart, axisEnd, distance) {
+    const parent = solid.parent || this.viewer?.scene || null;
+    const scratch = this._scratch;
+    scratch.axis.copy(axisEnd).sub(axisStart).normalize();
+    scratch.translation.copy(scratch.axis).multiplyScalar(distance);
+    scratch.parentWorldMatrix.copy(parent?.matrixWorld || new THREE.Matrix4());
+    scratch.parentInverse.copy(scratch.parentWorldMatrix).invert();
+    scratch.worldMatrix.copy(solid.matrixWorld);
+    scratch.deltaMatrix.makeTranslation(scratch.translation.x, scratch.translation.y, scratch.translation.z);
+    scratch.worldMatrix.premultiply(scratch.deltaMatrix);
+    scratch.localMatrix.copy(scratch.parentInverse).multiply(scratch.worldMatrix);
+    scratch.localMatrix.decompose(solid.position, solid.quaternion, solid.scale);
+    solid.updateMatrixWorld?.(true);
+    this._syncProxyGroupTransform(solid);
   }
 }

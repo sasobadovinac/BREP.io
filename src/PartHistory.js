@@ -10,6 +10,7 @@ import { AssemblyConstraintRegistry } from './assemblyConstraints/AssemblyConstr
 import { AssemblyComponentFeature } from './features/assemblyComponent/AssemblyComponentFeature.js';
 import { MetadataManager } from './metadataManager.js';
 import { PMIViewsManager } from './pmi/PMIViewsManager.js';
+import { SimulationStateManager } from './simulation/SimulationStateManager.js';
 import { Sheet2DManager } from './sheets/Sheet2DManager.js';
 import { WireHarnessManager } from './wireHarness/WireHarnessManager.js';
 import { base64ToUint8Array, getComponentRecord } from './services/componentLibrary.js';
@@ -79,6 +80,7 @@ export class PartHistory {
     this.configurator = createEmptyConfiguratorState();
     this.activeWorkbench = getDefaultWorkbenchForNewPart();
     this.pmiViewsManager = new PMIViewsManager(this);
+    this.simulationStateManager = new SimulationStateManager(this);
     this.sheet2DManager = new Sheet2DManager(this);
     this.wireHarnessManager = new WireHarnessManager(this);
     this.metadataManager = new MetadataManager
@@ -481,6 +483,7 @@ export class PartHistory {
     this.features = [];
     this.idCounter = 0;
     this.pmiViewsManager.reset();
+    this.simulationStateManager.reset();
     this.sheet2DManager.reset();
     this.wireHarnessManager.reset();
     this.expressions = DEFAULT_EXPRESSIONS;
@@ -1199,6 +1202,7 @@ export class PartHistory {
       timestamp: f.timestamp || null,
     }));
     const pmiViews = this.pmiViewsManager.toSerializable();
+    const simulation = this.simulationStateManager.toSerializable();
     const sheets2D = this.sheet2DManager.toSerializable();
     const wireHarness = this.wireHarnessManager.toSerializable();
 
@@ -1209,6 +1213,7 @@ export class PartHistory {
       configurator: this.getConfiguratorState(),
       activeWorkbench: normalizeWorkbenchId(this.activeWorkbench, getDefaultWorkbenchForNewPart()),
       pmiViews,
+      simulation,
       sheets2D,
       wireHarness,
       metadata: this.metadataManager.metadata,
@@ -1236,6 +1241,7 @@ export class PartHistory {
       ? normalizeWorkbenchId(importData.activeWorkbench, getLegacyLoadWorkbenchDefault())
       : getLegacyLoadWorkbenchDefault();
     this.pmiViewsManager.setViews(importData.pmiViews || []);
+    this.simulationStateManager.loadSerializable(importData.simulation || []);
     this.sheet2DManager.setSheets(importData.sheets2D || []);
     this.wireHarnessManager.loadSerializable(importData.wireHarness || []);
     this.metadataManager.metadata = importData.metadata || {};
