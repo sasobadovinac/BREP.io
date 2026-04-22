@@ -638,6 +638,8 @@ export class Viewer {
         this._workbenchReturnTarget = null;
         this._suspendWorkbenchReturn = false;
         this._workbenchPanelRecords = new Map();
+        this.simulationWorkbenchManager = null;
+        this._simulationWorkbenchManagerPromise = null;
 
 
 
@@ -2045,8 +2047,40 @@ export class Viewer {
         return this.setActiveWorkbench(target, { queueHistorySnapshot: true });
     }
 
+    async _ensureSimulationWorkbenchManager() {
+        if (this.simulationWorkbenchManager) return this.simulationWorkbenchManager;
+        if (this._simulationWorkbenchManagerPromise) return this._simulationWorkbenchManagerPromise;
+
+        this._simulationWorkbenchManagerPromise = (async () => {
+            try {
+                const moduleUrl = new URL('../simulation/SimulationWorkbenchManager.js', import.meta.url).href;
+                const { SimulationWorkbenchManager } = await import(/* @vite-ignore */ moduleUrl);
+                if (this._disposed) return null;
+                if (!this.simulationWorkbenchManager) {
+                    this.simulationWorkbenchManager = new SimulationWorkbenchManager(this);
+                }
+                return this.simulationWorkbenchManager;
+            } catch (error) {
+                try { console.warn('[Viewer] Failed to load simulation workbench manager', error); } catch { }
+                return null;
+            } finally {
+                this._simulationWorkbenchManagerPromise = null;
+            }
+        })();
+
+        return this._simulationWorkbenchManagerPromise;
+    }
+
     refreshWorkbenchUi() {
         if (this._viewerOnlyMode) return;
+        const isSimulationWorkbench = this._getActiveWorkbenchId() === 'SIMULATION';
+        if (isSimulationWorkbench) {
+            void this._ensureSimulationWorkbenchManager().then((manager) => {
+                try { manager?.setActive?.(this._getActiveWorkbenchId() === 'SIMULATION'); } catch { }
+            });
+        } else {
+            try { this.simulationWorkbenchManager?.setActive?.(false); } catch { }
+        }
         try { this.historyWidget?.refreshWorkbenchUi?.(); } catch { }
         try { SelectionFilter.refreshSelectionActions?.(); } catch { }
         try { this._refreshWorkbenchPanelVisibility(); } catch { }
@@ -2322,6 +2356,7 @@ export class Viewer {
     dispose() {
         if (this._disposed) return;
         this._disposed = true;
+        try { this.simulationWorkbenchManager?.dispose?.(); } catch { }
         cancelAnimationFrame(this._raf);
         if (this._hoverRefreshRaf != null) {
             cancelAnimationFrame(this._hoverRefreshRaf);

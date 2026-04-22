@@ -43,6 +43,19 @@ const getSingleSelectionComponent = (items, viewer) => {
   return component;
 };
 
+const getSingleSelectionSolid = (items, viewer) => {
+  if (!Array.isArray(items) || items.length === 0) return null;
+  let solid = null;
+  for (const item of items) {
+    const obj = item?.object || item?.target || item;
+    const owning = viewer?._findParentSolid?.(obj) || (obj?.type === 'SOLID' ? obj : null);
+    if (!owning) return null;
+    if (!solid) solid = owning;
+    else if (solid !== owning) return null;
+  }
+  return solid;
+};
+
 const getFeatureEntryById = (featureId, viewer) => {
   if (!featureId) return null;
   const features = Array.isArray(viewer?.partHistory?.features) ? viewer.partHistory.features : [];
@@ -110,6 +123,29 @@ export function registerSelectionToolbarButtons(viewer) {
         try { viewer?._handleEscapeAction?.(); } catch { }
       },
       shouldShow: (selection) => hasSelection(selection),
+    });
+  } catch { }
+
+  try {
+    SelectionFilter.registerSelectionAction({
+      id: 'selection-action-simulation-transform',
+      label: 'Sim Xform',
+      title: 'Toggle the simulation transform gizmo for the selected solid',
+      onClick: async () => {
+        const selection = SelectionFilter.getSelectedObjects();
+        const solid = getSingleSelectionSolid(selection, viewer);
+        if (!solid) {
+          viewer?._toast?.('Select a single solid to transform.');
+          return;
+        }
+        const manager = viewer?.simulationWorkbenchManager
+          || await viewer?._ensureSimulationWorkbenchManager?.();
+        manager?.toggleSolidTransform?.(solid);
+      },
+      shouldShow: (selection) => (
+        viewer?._getActiveWorkbenchId?.() === 'SIMULATION'
+        && !!getSingleSelectionSolid(selection, viewer)
+      ),
     });
   } catch { }
 

@@ -3,6 +3,7 @@ import { defineConfig } from 'vite';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import wasm from 'vite-plugin-wasm';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = __dirname; // adjust if your html files live elsewhere
@@ -36,6 +37,7 @@ const htmlEntries = {
 export default defineConfig(() => {
   const input = { ...htmlEntries };
   return {
+    plugins: [wasm()],
     // Explicitly set the public directory to ensure generated docs are included
     publicDir: 'public',
     resolve: {

@@ -170,6 +170,21 @@ class MetadataPanelController {
         } catch { }
     }
 
+    _setSimulationFixed(target, fixed) {
+        if (!target?.name) return false;
+        const manager = this.viewer?.partHistory?.metadataManager;
+        if (!manager) return false;
+        const simManager = this.viewer?.simulationWorkbenchManager;
+        if (simManager?.setSolidFixed) {
+            return simManager.setSolidFixed(target, fixed);
+        }
+        const data = manager.getOwnMetadata(target.name);
+        if (fixed) data.fixed = true;
+        else delete data.fixed;
+        manager.setMetadataObject(target.name, data);
+        return true;
+    }
+
     _render() {
         if (!this.open) return;
         this._ensurePanel();
@@ -214,6 +229,9 @@ class MetadataPanelController {
         const requiredColorKey = this._getDefaultColorKey(target);
         if (requiredColorKey && !entries.some((entry) => entry.key === requiredColorKey)) {
             entries.push({ key: requiredColorKey, value: '', valueString: '' });
+        }
+        if (this._shouldExposeSimulationFixed(target) && !entries.some((entry) => entry.key === 'fixed')) {
+            entries.push({ key: 'fixed', value: own.fixed === true, valueString: own.fixed === true ? 'true' : '' });
         }
 
         const filter = (this.filterText || '').trim().toLowerCase();
@@ -510,7 +528,7 @@ class MetadataPanelController {
             tbody.appendChild(emptyRow);
         }
 
-        for (const { key, valueString } of filtered) {
+        for (const { key, value, valueString } of filtered) {
             const row = document.createElement('tr');
             row.style.borderBottom = '1px solid #1f2937';
 
@@ -530,8 +548,14 @@ class MetadataPanelController {
             keyInput.style.border = '1px solid #1f2937';
             keyInput.style.background = '#0f172a';
             keyInput.style.color = '#e2e8f0';
+            if (this._isSimulationFixedField(target, key)) {
+                keyInput.disabled = true;
+                keyInput.style.opacity = '0.75';
+                keyInput.style.cursor = 'default';
+            }
 
             keyInput.addEventListener('blur', () => {
+                if (this._isSimulationFixedField(target, key)) return;
                 const newKey = keyInput.value.trim();
                 if (!newKey) {
                     keyInput.value = key;
@@ -567,73 +591,99 @@ class MetadataPanelController {
             valueWrap.style.alignItems = 'stretch';
             valueWrap.style.gap = '6px';
             valueWrap.style.width = '100%';
-            const valueTextarea = document.createElement('textarea');
-            valueTextarea.value = valueString;
-            valueTextarea.title = 'Value (JSON accepted)';
-            valueTextarea.style.width = '100%';
-            valueTextarea.style.flex = '1 1 auto';
-            valueTextarea.style.font = '12px monospace';
-            valueTextarea.style.padding = '6px';
-            valueTextarea.style.border = '1px solid #1f2937';
-            valueTextarea.style.background = '#0f172a';
-            valueTextarea.style.color = '#e2e8f0';
-            valueTextarea.style.resize = 'vertical';
-            valueTextarea.style.boxSizing = 'border-box';
-            valueTextarea.style.lineHeight = '1.4';
-            valueTextarea.setAttribute('wrap', 'soft');
-
-            const commitValue = () => {
-                this._commitMetadataValue(manager, name, key, valueTextarea.value);
-                this._refreshMetadataColors();
-                this._render();
-            };
-
-            valueTextarea.addEventListener('blur', () => {
-                commitValue();
-            });
-
-            valueWrap.appendChild(valueTextarea);
-            if (this._isColorKey(key)) {
-                const colorInput = document.createElement('input');
-                colorInput.type = 'color';
-                colorInput.title = 'Pick a color';
-                colorInput.style.width = '32px';
-                colorInput.style.minWidth = '32px';
-                colorInput.style.height = '28px';
-                colorInput.style.padding = '0';
-                colorInput.style.border = '1px solid #1f2937';
-                colorInput.style.background = '#0f172a';
-                const hex = this._resolveColorHex(valueTextarea.value);
-                if (hex) colorInput.value = hex;
-                valueTextarea.addEventListener('input', () => {
-                    const nextHex = this._resolveColorHex(valueTextarea.value);
-                    if (nextHex) colorInput.value = nextHex;
+            if (this._isSimulationFixedField(target, key)) {
+                const fixedCheckbox = document.createElement('input');
+                fixedCheckbox.type = 'checkbox';
+                fixedCheckbox.checked = value === true;
+                fixedCheckbox.style.width = '18px';
+                fixedCheckbox.style.height = '18px';
+                fixedCheckbox.style.margin = '4px 0';
+                fixedCheckbox.addEventListener('change', () => {
+                    this._setSimulationFixed(target, fixedCheckbox.checked);
+                    this.viewer?.partHistory?.queueHistorySnapshot?.({ debounceMs: 0, reason: 'simulation-fixed' });
+                    this._render();
                 });
-                colorInput.addEventListener('input', () => {
-                    valueTextarea.value = colorInput.value;
-                    try { valueTextarea.dispatchEvent(new Event('input')); } catch { }
-                });
-                colorInput.addEventListener('change', () => {
+                const fixedLabel = document.createElement('label');
+                fixedLabel.style.display = 'flex';
+                fixedLabel.style.alignItems = 'center';
+                fixedLabel.style.gap = '8px';
+                fixedLabel.style.color = '#e2e8f0';
+                fixedLabel.style.font = '12px monospace';
+                fixedLabel.appendChild(fixedCheckbox);
+                const fixedText = document.createElement('span');
+                fixedText.textContent = 'Treat this solid as fixed during simulation';
+                fixedLabel.appendChild(fixedText);
+                valueWrap.appendChild(fixedLabel);
+                valueCell.appendChild(valueWrap);
+            } else {
+                const valueTextarea = document.createElement('textarea');
+                valueTextarea.value = valueString;
+                valueTextarea.title = 'Value (JSON accepted)';
+                valueTextarea.style.width = '100%';
+                valueTextarea.style.flex = '1 1 auto';
+                valueTextarea.style.font = '12px monospace';
+                valueTextarea.style.padding = '6px';
+                valueTextarea.style.border = '1px solid #1f2937';
+                valueTextarea.style.background = '#0f172a';
+                valueTextarea.style.color = '#e2e8f0';
+                valueTextarea.style.resize = 'vertical';
+                valueTextarea.style.boxSizing = 'border-box';
+                valueTextarea.style.lineHeight = '1.4';
+                valueTextarea.setAttribute('wrap', 'soft');
+
+                const commitValue = () => {
+                    this._commitMetadataValue(manager, name, key, valueTextarea.value);
+                    this._refreshMetadataColors();
+                    this._render();
+                };
+
+                valueTextarea.addEventListener('blur', () => {
                     commitValue();
                 });
-                valueWrap.appendChild(colorInput);
 
-                const resetBtn = document.createElement('button');
-                resetBtn.className = 'fw-btn';
-                resetBtn.textContent = 'Reset';
-                resetBtn.title = 'Clear color value';
-                resetBtn.style.height = '28px';
-                resetBtn.style.padding = '2px 6px';
-                resetBtn.addEventListener('click', () => {
-                    valueTextarea.value = '';
-                    colorInput.value = '#000000';
-                    commitValue();
-                });
-                valueWrap.appendChild(resetBtn);
+                valueWrap.appendChild(valueTextarea);
+                if (this._isColorKey(key)) {
+                    const colorInput = document.createElement('input');
+                    colorInput.type = 'color';
+                    colorInput.title = 'Pick a color';
+                    colorInput.style.width = '32px';
+                    colorInput.style.minWidth = '32px';
+                    colorInput.style.height = '28px';
+                    colorInput.style.padding = '0';
+                    colorInput.style.border = '1px solid #1f2937';
+                    colorInput.style.background = '#0f172a';
+                    const hex = this._resolveColorHex(valueTextarea.value);
+                    if (hex) colorInput.value = hex;
+                    valueTextarea.addEventListener('input', () => {
+                        const nextHex = this._resolveColorHex(valueTextarea.value);
+                        if (nextHex) colorInput.value = nextHex;
+                    });
+                    colorInput.addEventListener('input', () => {
+                        valueTextarea.value = colorInput.value;
+                        try { valueTextarea.dispatchEvent(new Event('input')); } catch { }
+                    });
+                    colorInput.addEventListener('change', () => {
+                        commitValue();
+                    });
+                    valueWrap.appendChild(colorInput);
+
+                    const resetBtn = document.createElement('button');
+                    resetBtn.className = 'fw-btn';
+                    resetBtn.textContent = 'Reset';
+                    resetBtn.title = 'Clear color value';
+                    resetBtn.style.height = '28px';
+                    resetBtn.style.padding = '2px 6px';
+                    resetBtn.addEventListener('click', () => {
+                        valueTextarea.value = '';
+                        colorInput.value = '#000000';
+                        commitValue();
+                    });
+                    valueWrap.appendChild(resetBtn);
+                }
+
+                valueCell.appendChild(valueWrap);
+                autoResizeTextarea(valueTextarea, baseInputHeight);
             }
-
-            valueCell.appendChild(valueWrap);
-            autoResizeTextarea(valueTextarea, baseInputHeight);
 
             const selectCell = document.createElement('td');
             selectCell.style.padding = '4px';
@@ -654,9 +704,16 @@ class MetadataPanelController {
             actionCell.style.textAlign = 'center';
             const deleteBtn = document.createElement('button');
             deleteBtn.className = 'fw-btn';
-            deleteBtn.textContent = '✕';
-            deleteBtn.title = 'Delete attribute';
+            deleteBtn.textContent = this._isSimulationFixedField(target, key) ? 'Reset' : '✕';
+            deleteBtn.title = this._isSimulationFixedField(target, key) ? 'Clear fixed state' : 'Delete attribute';
             deleteBtn.addEventListener('click', () => {
+                if (this._isSimulationFixedField(target, key)) {
+                    this._setSimulationFixed(target, false);
+                    this.viewer?.partHistory?.queueHistorySnapshot?.({ debounceMs: 0, reason: 'simulation-fixed' });
+                    this.selectedKeys.delete(key);
+                    this._render();
+                    return;
+                }
                 manager.deleteMetadataKey(name, key);
                 this._refreshMetadataColors();
                 this.selectedKeys.delete(key);
@@ -777,6 +834,15 @@ class MetadataPanelController {
         const type = target.type;
         if (type === 'SOLID' || type === 'FACE' || type === 'EDGE') return 'color';
         return null;
+    }
+
+    _shouldExposeSimulationFixed(target) {
+        return !!target
+            && target.type === 'SOLID';
+    }
+
+    _isSimulationFixedField(target, key) {
+        return this._shouldExposeSimulationFixed(target) && String(key || '').trim() === 'fixed';
     }
 
     _isColorKey(key) {
