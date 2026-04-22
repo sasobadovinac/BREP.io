@@ -140,7 +140,11 @@ export async function chamfer(opts = {}) {
   const debugSnapshots = Array.isArray(nativeResult?.debugSnapshots) ? nativeResult.debugSnapshots : [];
   for (const entry of debugSnapshots) {
     const debugSolid = solidFromSnapshot(entry?.snapshot, String(entry?.name || 'CHAMFER_DEBUG'), Solid);
-    if (debugSolid) debugChamferSolids.push(debugSolid);
+    if (debugSolid) {
+      try { debugSolid.__debugChamferKind = String(entry?.kind || ''); } catch { }
+      try { debugSolid.__debugChamferName = String(entry?.name || debugSolid?.name || ''); } catch { }
+      debugChamferSolids.push(debugSolid);
+    }
   }
   try { result.__debugChamferSolids = debugChamferSolids; } catch { }
   try { result.__chamferDirectionDecision = nativeResult?.directionDecision || null; } catch { }

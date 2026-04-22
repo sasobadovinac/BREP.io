@@ -123,8 +123,9 @@ export function _manifoldize() {
 }
 
 /**
- * Set vertex weld epsilon and optionally weld existing vertices and
- * remove degenerate triangles. Epsilon <= 0 disables welding.
+ * Set vertex weld epsilon and optionally align existing authored
+ * vertices that fall within the epsilon distance. Epsilon <= 0
+ * disables welding; manifold prep handles later dedup/cleanup.
  */
 export function setEpsilon(epsilon = 0) {
     this._epsilon = Number(epsilon) || 0;
@@ -134,11 +135,13 @@ export function setEpsilon(epsilon = 0) {
     return this;
 }
 
-export function _weldVerticesByEpsilon(eps) {
+export function _weldVerticesByEpsilon(eps, options = {}) {
     requireCppSolidCoreCapability(
         cppSolidCoreHasAuthoringBridge && cppSolidCoreHasNativeWeldVerticesByEpsilon,
         "Solid._weldVerticesByEpsilon()"
     );
+    const rebuildManifold =
+        !(options?.rebuildManifold === false);
     this._cppSolidCore = this._cppSolidCore || new CppSolidCore();
     syncSolidAuthoringStateToCpp(this, this._cppSolidCore);
     this._cppSolidCore.weldVerticesByEpsilon(eps);
@@ -147,7 +150,9 @@ export function _weldVerticesByEpsilon(eps) {
     this._faceIndex = null;
     try { if (this._manifold && typeof this._manifold.delete === 'function') this._manifold.delete(); } catch { }
     this._manifold = null;
-    this._manifoldize();
+    if (rebuildManifold) {
+        this._manifoldize();
+    }
     return this;
 }
 

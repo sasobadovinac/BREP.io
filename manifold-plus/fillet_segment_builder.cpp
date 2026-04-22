@@ -27,6 +27,7 @@ namespace {
 
 constexpr double kEps = 1e-12;
 constexpr uint32_t kNumProp = 3;
+constexpr double kPi = 3.141592653589793238462643383279502884;
 
 struct Vec3 {
   double x = 0.0;
@@ -1341,6 +1342,22 @@ struct BuiltFilletEntry {
   std::string merge_face_metadata_json;
 };
 
+struct BuiltChamferEntry {
+  uint32_t index = 0;
+  std::string chamfer_name;
+  std::string edge_reference;
+  std::string face_a_name;
+  std::string face_b_name;
+  std::string edge_direction;
+  emscripten::val final_snapshot = emscripten::val::null();
+  std::vector<Vec3> edge_polyline;
+  bool closed_loop = false;
+  std::string cap_start_face_name;
+  std::string cap_end_face_name;
+  std::vector<Vec3> cap_start_points;
+  std::vector<Vec3> cap_end_points;
+};
+
 struct SharedEndpointInfo {
   bool valid = false;
   uint32_t a_end_index = 0;
@@ -1377,12 +1394,10 @@ Vec3 TangentAwayFromEndpoint(const std::vector<Vec3>& points,
   return {};
 }
 
-SharedEndpointInfo ResolveSharedEndpointInfo(const BuiltFilletEntry& entry_a,
-                                             const BuiltFilletEntry& entry_b,
+SharedEndpointInfo ResolveSharedEndpointInfo(const std::vector<Vec3>& path_a,
+                                             const std::vector<Vec3>& path_b,
                                              double endpoint_tol) {
   SharedEndpointInfo out;
-  const auto& path_a = entry_a.edge_points.empty() ? entry_a.edge_polyline : entry_a.edge_points;
-  const auto& path_b = entry_b.edge_points.empty() ? entry_b.edge_polyline : entry_b.edge_points;
   if (path_a.size() < 2 || path_b.size() < 2) return out;
   const double tol_sq = endpoint_tol * endpoint_tol;
   for (uint32_t ai = 0; ai < 2; ++ai) {
@@ -1410,6 +1425,16 @@ SharedEndpointInfo ResolveSharedEndpointInfo(const BuiltFilletEntry& entry_a,
     out.abs_tangent_dot = std::min(1.0, std::abs(out.tangent_dot));
   }
   return out;
+}
+
+SharedEndpointInfo ResolveSharedEndpointInfo(const BuiltFilletEntry& entry_a,
+                                             const BuiltFilletEntry& entry_b,
+                                             double endpoint_tol) {
+  const auto& path_a =
+      entry_a.edge_points.empty() ? entry_a.edge_polyline : entry_a.edge_points;
+  const auto& path_b =
+      entry_b.edge_points.empty() ? entry_b.edge_polyline : entry_b.edge_points;
+  return ResolveSharedEndpointInfo(path_a, path_b, endpoint_tol);
 }
 
 struct CornerSegment {
@@ -1611,6 +1636,20 @@ double EstimatePointSetRadius(const std::vector<Vec3>& points, const Vec3& cente
   return distances[distances.size() / 2];
 }
 
+double MinimumPointSetDistance(const std::vector<Vec3>& points_a,
+                               const std::vector<Vec3>& points_b) {
+  if (points_a.empty() || points_b.empty()) {
+    return std::numeric_limits<double>::infinity();
+  }
+  double best_sq = std::numeric_limits<double>::infinity();
+  for (const Vec3& point_a : points_a) {
+    for (const Vec3& point_b : points_b) {
+      best_sq = std::min(best_sq, DistanceSq(point_a, point_b));
+    }
+  }
+  return std::sqrt(best_sq);
+}
+
 EntryEndCapData ResolveEntryEndCapData(const BuiltFilletEntry& entry,
                                        uint32_t endpoint_index,
                                        double point_tol) {
@@ -1632,6 +1671,146 @@ EntryEndCapData ResolveEntryEndCapData(const BuiltFilletEntry& entry,
   }
   out.wedge_center = CentroidOfPoints(out.wedge_points, &out.has_wedge_center);
   out.tube_center = CentroidOfPoints(out.tube_points, &out.has_tube_center);
+  return out;
+}
+
+struct ChamferEndCapData {
+  std::vector<Vec3> points;
+  Vec3 center{};
+  bool has_center = false;
+};
+
+ChamferEndCapData ResolveChamferEndCapData(const BuiltChamferEntry& entry,
+                                           uint32_t endpoint_index,
+                                           double point_tol) {
+  ChamferEndCapData out;
+  const auto& preferred_points =
+      endpoint_index == 0 ? entry.cap_start_points : entry.cap_end_points;
+  if (preferred_points.size() >= 3) {
+    out.points = preferred_points;
+  } else {
+    if (entry.final_snapshot.isUndefined() || entry.final_snapshot.isNull()) return out;
+    const std::string face_name =
+        endpoint_index == 0 ? entry.cap_start_face_name : entry.cap_end_face_name;
+    out.points = CollectUniqueFacePoints(entry.final_snapshot, face_name, point_tol);
+  }
+  out.center = CentroidOfPoints(out.points, &out.has_center);
+  return out;
+}
+
+using Triangle3 = std::array<Vec3, 3>;
+
+bool ResolveChamferTriangle(const ChamferEndCapData& cap, Triangle3& out) {
+  if (cap.points.size() < 3) return false;
+  out[0] = cap.points[0];
+  out[1] = cap.points[1];
+  out[2] = cap.points[2];
+  return TriangleArea(out[0], out[1], out[2]) > 1e-18;
+}
+
+Triangle3 PermuteTriangle(const Triangle3& triangle,
+                          const std::array<uint32_t, 3>& order) {
+  return {triangle[order[0]], triangle[order[1]], triangle[order[2]]};
+}
+
+void AddOrientedTriangle(SnapshotBuilder& builder, const std::string& face_name,
+                         const Vec3& a, const Vec3& b, const Vec3& c,
+                         const Vec3& solid_center, double min_triangle_area) {
+  const Vec3 face_center = Scale(Add(Add(a, b), c), 1.0 / 3.0);
+  const Vec3 outward_hint = Subtract(face_center, solid_center);
+  const Vec3 normal = Cross(Subtract(b, a), Subtract(c, a));
+  if (Dot(normal, outward_hint) < 0.0) {
+    AddTriangleIfValid(builder, face_name, a, c, b, min_triangle_area);
+  } else {
+    AddTriangleIfValid(builder, face_name, a, b, c, min_triangle_area);
+  }
+}
+
+struct ChamferCapBridgeCandidate {
+  bool valid = false;
+  emscripten::val snapshot = emscripten::val::null();
+  double mean_distance = std::numeric_limits<double>::infinity();
+  double max_distance = std::numeric_limits<double>::infinity();
+};
+
+ChamferCapBridgeCandidate BuildChamferCapBridgeCandidate(
+    const ChamferEndCapData& source_cap, const ChamferEndCapData& target_cap,
+    const std::string& solid_name, double max_pair_distance) {
+  ChamferCapBridgeCandidate out;
+
+  Triangle3 source_points{};
+  Triangle3 target_points_raw{};
+  if (!ResolveChamferTriangle(source_cap, source_points) ||
+      !ResolveChamferTriangle(target_cap, target_points_raw)) {
+    return out;
+  }
+
+  static constexpr std::array<std::array<uint32_t, 3>, 6> kTriangleOrders = {{
+      {{0, 1, 2}},
+      {{0, 2, 1}},
+      {{1, 0, 2}},
+      {{1, 2, 0}},
+      {{2, 0, 1}},
+      {{2, 1, 0}},
+  }};
+
+  Triangle3 target_points = target_points_raw;
+  double best_match_score = std::numeric_limits<double>::infinity();
+  for (const auto& order : kTriangleOrders) {
+    const Triangle3 candidate = PermuteTriangle(target_points_raw, order);
+    double score = 0.0;
+    for (uint32_t i = 0; i < 3; ++i) {
+      score += DistanceSq(source_points[i], candidate[i]);
+    }
+    if (score < best_match_score) {
+      best_match_score = score;
+      target_points = candidate;
+    }
+  }
+
+  double sum_distance = 0.0;
+  double max_distance = 0.0;
+  for (uint32_t i = 0; i < 3; ++i) {
+    const double pair_distance = std::sqrt(DistanceSq(source_points[i], target_points[i]));
+    if (!std::isfinite(pair_distance) || pair_distance > max_pair_distance) {
+      return out;
+    }
+    sum_distance += pair_distance;
+    max_distance = std::max(max_distance, pair_distance);
+  }
+  if (!(max_distance > 1e-9)) return out;
+
+  const Vec3 solid_center = Scale(
+      Add(Add(Add(source_points[0], source_points[1]),
+              Add(source_points[2], target_points[0])),
+          Add(target_points[1], target_points[2])),
+      1.0 / 6.0);
+
+  SnapshotBuilder builder;
+  AddOrientedTriangle(builder, solid_name + "_SOURCE_CAP", source_points[0],
+                      source_points[1], source_points[2], solid_center, 1e-18);
+  AddOrientedTriangle(builder, solid_name + "_TARGET_CAP", target_points[0],
+                      target_points[1], target_points[2], solid_center, 1e-18);
+
+  auto add_side_quad = [&](const std::string& face_name, uint32_t i0,
+                           uint32_t i1) {
+    const Vec3& a0 = source_points[i0];
+    const Vec3& a1 = source_points[i1];
+    const Vec3& b0 = target_points[i0];
+    const Vec3& b1 = target_points[i1];
+    AddOrientedTriangle(builder, face_name, a0, a1, b1, solid_center, 1e-18);
+    AddOrientedTriangle(builder, face_name, a0, b1, b0, solid_center, 1e-18);
+  };
+  add_side_quad(solid_name + "_SIDE_0", 0, 1);
+  add_side_quad(solid_name + "_SIDE_1", 1, 2);
+  add_side_quad(solid_name + "_SIDE_2", 2, 0);
+
+  out.snapshot = BuildSnapshot(builder);
+  out.snapshot.set("name", solid_name);
+  out.snapshot.set("nativeKernel", true);
+  out.mean_distance = sum_distance / 3.0;
+  out.max_distance = max_distance;
+  out.valid = true;
   return out;
 }
 
@@ -1877,6 +2056,103 @@ emscripten::val BuildSingleFaceSnapshot(const manifold::Manifold& manifold_solid
                            face_metadata_json);
   return BuildSnapshotFromMesh(mesh, id_to_face_name, face_name_to_id,
                                face_metadata_json, {}, {}, name);
+}
+
+bool AddTriangleIfValid(SnapshotBuilder& builder, const std::string& face_name,
+                        const Vec3& a, const Vec3& b, const Vec3& c,
+                        double min_triangle_area);
+
+std::string BuildChamferCrossSectionFaceMetadataJson(const Vec3& a,
+                                                     const Vec3& b,
+                                                     const Vec3& c) {
+  std::ostringstream stream;
+  stream.precision(std::numeric_limits<double>::max_digits10);
+  stream << "{\"debugSketchFace\":true,\"boundaryLoopsWorld\":[{\"isHole\":false,"
+            "\"pts\":[["
+         << a.x << "," << a.y << "," << a.z << "],[" << b.x << "," << b.y
+         << "," << b.z << "],[" << c.x << "," << c.y << "," << c.z
+         << "]]}]}";
+  return stream.str();
+}
+
+emscripten::val BuildChamferCrossSectionSnapshots(
+    const std::string& base_name, const std::vector<Vec3>& rail_p,
+    const std::vector<Vec3>& rail_a, const std::vector<Vec3>& rail_b) {
+  emscripten::val snapshots = emscripten::val::array();
+  const size_t count = std::min({rail_p.size(), rail_a.size(), rail_b.size()});
+  uint32_t snapshot_index = 0;
+  for (size_t i = 0; i < count; ++i) {
+    SnapshotBuilder builder;
+    const std::string face_name =
+        base_name + "_SECTION_" + std::to_string(static_cast<uint32_t>(i));
+    const size_t tri_vert_base = builder.tri_verts.size();
+    if (!AddTriangleIfValid(builder, face_name, rail_p[i], rail_a[i], rail_b[i],
+                            1e-18)) {
+      continue;
+    }
+
+    auto point_from_builder_index = [&](uint32_t index) {
+      const size_t base = static_cast<size_t>(index) * 3;
+      return std::array<double, 3>{
+          static_cast<double>(builder.vert_properties[base + 0]),
+          static_cast<double>(builder.vert_properties[base + 1]),
+          static_cast<double>(builder.vert_properties[base + 2]),
+      };
+    };
+    const std::array<double, 3> c_point =
+        point_from_builder_index(builder.tri_verts[tri_vert_base + 0]);
+    const std::array<double, 3> a_point =
+        point_from_builder_index(builder.tri_verts[tri_vert_base + 1]);
+    const std::array<double, 3> b_point =
+        point_from_builder_index(builder.tri_verts[tri_vert_base + 2]);
+
+    emscripten::val entry = emscripten::val::object();
+    entry.set("kind", "chamferCrossSection");
+    entry.set("name", face_name);
+    entry.set("sampleIndex", static_cast<uint32_t>(i));
+    entry.set("point", ToPointValue(rail_p[i]));
+    entry.set("a", ToPointValue(rail_a[i]));
+    entry.set("b", ToPointValue(rail_b[i]));
+    entry.set("c", ToPointValue(rail_p[i]));
+    std::unordered_map<std::string, std::string> face_metadata_json;
+    face_metadata_json.emplace(
+        face_name,
+        BuildChamferCrossSectionFaceMetadataJson(
+            Vec3{a_point[0], a_point[1], a_point[2]},
+            Vec3{b_point[0], b_point[1], b_point[2]},
+            Vec3{c_point[0], c_point[1], c_point[2]}));
+    std::vector<AuxEdgeRecord> aux_edges;
+    aux_edges.reserve(3);
+    auto add_section_edge = [&](const std::string& edge_suffix, const Vec3& p0,
+                                const Vec3& p1) {
+      AuxEdgeRecord edge;
+      edge.name = face_name + "_" + edge_suffix;
+      edge.closed_loop = false;
+      edge.polyline_world = false;
+      edge.centerline = false;
+      edge.material_key = "SECTION";
+      edge.face_a = face_name;
+      edge.points.push_back({p0.x, p0.y, p0.z});
+      edge.points.push_back({p1.x, p1.y, p1.z});
+      aux_edges.push_back(std::move(edge));
+    };
+    add_section_edge("EDGE_A_B",
+                     Vec3{a_point[0], a_point[1], a_point[2]},
+                     Vec3{b_point[0], b_point[1], b_point[2]});
+    add_section_edge("EDGE_B_C",
+                     Vec3{b_point[0], b_point[1], b_point[2]},
+                     Vec3{c_point[0], c_point[1], c_point[2]});
+    add_section_edge("EDGE_C_A",
+                     Vec3{c_point[0], c_point[1], c_point[2]},
+                     Vec3{a_point[0], a_point[1], a_point[2]});
+
+    emscripten::val snapshot = BuildSnapshot(builder, face_metadata_json, aux_edges);
+    snapshot.set("name", face_name);
+    snapshot.set("nativeKernel", true);
+    entry.set("snapshot", snapshot);
+    snapshots.set(snapshot_index++, entry);
+  }
+  return snapshots;
 }
 
 struct SharedBoundaryChain {
@@ -4151,6 +4427,125 @@ Vec3 TranslatePointWithinPlane(const Vec3& point, const Vec3& face_normal,
   return Add(point, Scale(dir, inflate / len_sq));
 }
 
+Vec3 ProjectPointOntoPlane(const Vec3& point, const Vec3& plane_point,
+                          const Vec3& plane_normal) {
+  const Vec3 normal = Normalize(plane_normal);
+  if (!(LengthSq(normal) > 1e-18)) return point;
+  return Subtract(point,
+                  Scale(normal, Dot(Subtract(point, plane_point), normal)));
+}
+
+double SignedDistanceToPlane(const Vec3& point, const Vec3& plane_point,
+                             const Vec3& plane_normal) {
+  const Vec3 normal = Normalize(plane_normal);
+  if (!(LengthSq(normal) > 1e-18)) return 0.0;
+  return Dot(Subtract(point, plane_point), normal);
+}
+
+bool ChamferCapPlaneContainsSourceEdge(
+    const std::vector<Vec3>& source_edge_points, const Vec3& plane_point,
+    const Vec3& plane_normal, uint32_t endpoint_index, double tolerance) {
+  if (source_edge_points.size() < 2) return true;
+  const Vec3 normal = Normalize(plane_normal);
+  if (!(LengthSq(normal) > 1e-18)) return true;
+
+  double reference_sign = 0.0;
+  if (endpoint_index == 0) {
+    for (size_t i = 1; i < source_edge_points.size(); ++i) {
+      const double signed_distance =
+          SignedDistanceToPlane(source_edge_points[i], plane_point, normal);
+      if (std::abs(signed_distance) > tolerance) {
+        reference_sign = SignNonZero(signed_distance);
+        break;
+      }
+    }
+  } else {
+    for (size_t i = source_edge_points.size() - 1; i-- > 0;) {
+      const double signed_distance =
+          SignedDistanceToPlane(source_edge_points[i], plane_point, normal);
+      if (std::abs(signed_distance) > tolerance) {
+        reference_sign = SignNonZero(signed_distance);
+        break;
+      }
+    }
+  }
+  if (reference_sign == 0.0) return true;
+
+  for (const Vec3& point : source_edge_points) {
+    const double signed_distance =
+        SignedDistanceToPlane(point, plane_point, normal);
+    if (signed_distance * reference_sign < (-tolerance)) return false;
+  }
+  return true;
+}
+
+void SnapChamferOpenEndCapsToEndpointPlanes(const std::vector<Vec3>& source_edge_points,
+                                            const std::vector<Vec3>& tangents,
+                                            std::vector<Vec3>& rail_p,
+                                            std::vector<Vec3>& rail_a,
+                                            std::vector<Vec3>& rail_b,
+                                            bool closed_loop,
+                                            double max_tangent_offset) {
+  if (closed_loop || source_edge_points.size() < 2) return;
+  const size_t count = std::min({rail_p.size(), rail_a.size(), rail_b.size(),
+                                 tangents.size(), source_edge_points.size()});
+  if (count < 2) return;
+
+  const Vec3 tangent_start = Normalize(tangents.front());
+  if (LengthSq(tangent_start) > 1e-18) {
+    const Vec3 current_plane_normal =
+        Normalize(Cross(Subtract(rail_a.front(), rail_p.front()),
+                        Subtract(rail_b.front(), rail_p.front())));
+    const double a_offset = std::abs(
+        SignedDistanceToPlane(rail_a.front(), source_edge_points.front(),
+                              tangent_start));
+    const double b_offset = std::abs(
+        SignedDistanceToPlane(rail_b.front(), source_edge_points.front(),
+                              tangent_start));
+    const bool source_edge_inside =
+        ChamferCapPlaneContainsSourceEdge(source_edge_points, rail_p.front(),
+                                         current_plane_normal, 0,
+                                         max_tangent_offset);
+    if (!source_edge_inside ||
+        std::max(a_offset, b_offset) > max_tangent_offset) {
+      const Vec3 ideal_plane_point = source_edge_points.front();
+      rail_p.front() =
+          ProjectPointOntoPlane(rail_p.front(), ideal_plane_point, tangent_start);
+      rail_a.front() =
+          ProjectPointOntoPlane(rail_a.front(), ideal_plane_point, tangent_start);
+      rail_b.front() =
+          ProjectPointOntoPlane(rail_b.front(), ideal_plane_point, tangent_start);
+    }
+  }
+
+  const Vec3 tangent_end = Normalize(tangents.back());
+  if (LengthSq(tangent_end) > 1e-18) {
+    const Vec3 current_plane_normal =
+        Normalize(Cross(Subtract(rail_b.back(), rail_p.back()),
+                        Subtract(rail_a.back(), rail_p.back())));
+    const double a_offset =
+        std::abs(SignedDistanceToPlane(rail_a.back(), source_edge_points.back(),
+                                       tangent_end));
+    const double b_offset =
+        std::abs(SignedDistanceToPlane(rail_b.back(), source_edge_points.back(),
+                                       tangent_end));
+    const bool source_edge_inside =
+        ChamferCapPlaneContainsSourceEdge(source_edge_points, rail_p.back(),
+                                         current_plane_normal, 1,
+                                         max_tangent_offset);
+    if (!source_edge_inside ||
+        std::max(a_offset, b_offset) > max_tangent_offset) {
+      const Vec3 ideal_plane_point = source_edge_points.back();
+      rail_p.back() =
+          ProjectPointOntoPlane(rail_p.back(), ideal_plane_point, tangent_end);
+      rail_a.back() =
+          ProjectPointOntoPlane(rail_a.back(), ideal_plane_point, tangent_end);
+      rail_b.back() =
+          ProjectPointOntoPlane(rail_b.back(), ideal_plane_point, tangent_end);
+    }
+  }
+}
+
 void InflateChamferRails(const std::vector<Vec3>& rail_p,
                          const std::vector<Vec3>& rail_a,
                          const std::vector<Vec3>& rail_b,
@@ -4224,6 +4619,424 @@ void BuildChamferPrismNamed(SnapshotBuilder& builder, const std::string& base_na
   }
 }
 
+std::vector<Vec3> BuildChamferCapTriangle(const std::vector<Vec3>& rail_p,
+                                          const std::vector<Vec3>& rail_a,
+                                          const std::vector<Vec3>& rail_b,
+                                          bool use_end_cap) {
+  if (rail_p.empty() || rail_a.empty() || rail_b.empty()) return {};
+  if (use_end_cap) {
+    return {rail_p.back(), rail_b.back(), rail_a.back()};
+  }
+  return {rail_p.front(), rail_a.front(), rail_b.front()};
+}
+
+std::vector<manifold::vec3> BuildUniqueHullPoints(const std::vector<Vec3>& points,
+                                                  double point_tol_sq) {
+  std::vector<manifold::vec3> hull_points;
+  hull_points.reserve(points.size());
+  std::vector<Vec3> unique_points;
+  unique_points.reserve(points.size());
+  for (const Vec3& point : points) {
+    bool duplicate = false;
+    for (const Vec3& existing : unique_points) {
+      if (DistanceSq(point, existing) <= point_tol_sq) {
+        duplicate = true;
+        break;
+      }
+    }
+    if (duplicate) continue;
+    unique_points.push_back(point);
+    hull_points.push_back(ToManifoldVec3(point));
+  }
+  return hull_points;
+}
+
+struct ChamferReferenceTriangle {
+  uint32_t face_id = 0;
+  std::string face_name;
+  Vec3 a{};
+  Vec3 b{};
+  Vec3 c{};
+  Vec3 normal{};
+};
+
+void AddChamferReferenceTriangle(
+    std::vector<ChamferReferenceTriangle>& references, uint32_t face_id,
+    const std::string& face_name, const Vec3& a, const Vec3& b, const Vec3& c) {
+  if (!(TriangleArea(a, b, c) > 1e-18)) return;
+  ChamferReferenceTriangle reference;
+  reference.face_id = face_id;
+  reference.face_name = face_name;
+  reference.a = a;
+  reference.b = b;
+  reference.c = c;
+  reference.normal = Normalize(Cross(Subtract(b, a), Subtract(c, a)));
+  references.push_back(std::move(reference));
+}
+
+std::vector<ChamferReferenceTriangle> BuildChamferReferenceTriangles(
+    const std::string& base_name, const std::vector<Vec3>& rail_p,
+    const std::vector<Vec3>& rail_a, const std::vector<Vec3>& rail_b,
+    bool close_loop, std::unordered_map<uint32_t, std::string>& id_to_face_name,
+    std::unordered_map<std::string, uint32_t>& face_name_to_id) {
+  std::vector<ChamferReferenceTriangle> references;
+  const size_t count = std::min({rail_p.size(), rail_a.size(), rail_b.size()});
+  if (count < 2) return references;
+
+  const std::string side_a_name = base_name + "_SIDE_A";
+  const std::string side_b_name = base_name + "_SIDE_B";
+  const std::string bevel_name = base_name + "_BEVEL";
+  const std::string cap0_name = base_name + "_CAP0";
+  const std::string cap1_name = base_name + "_CAP1";
+
+  auto reserve_face = [&](const std::string& face_name) {
+    const uint32_t face_id = manifold::Manifold::ReserveIDs(1);
+    face_name_to_id.emplace(face_name, face_id);
+    id_to_face_name.emplace(face_id, face_name);
+    return face_id;
+  };
+
+  const uint32_t side_a_id = reserve_face(side_a_name);
+  const uint32_t side_b_id = reserve_face(side_b_name);
+  const uint32_t bevel_id = reserve_face(bevel_name);
+  uint32_t cap0_id = 0;
+  uint32_t cap1_id = 0;
+  if (!close_loop) {
+    cap0_id = reserve_face(cap0_name);
+    cap1_id = reserve_face(cap1_name);
+  }
+
+  auto add_link = [&](uint32_t face_id, const std::string& face_name,
+                      const Vec3& a0, const Vec3& a1, const Vec3& b0,
+                      const Vec3& b1) {
+    AddChamferReferenceTriangle(references, face_id, face_name, a0, b0, b1);
+    AddChamferReferenceTriangle(references, face_id, face_name, a0, b1, a1);
+  };
+
+  for (size_t i = 0; i + 1 < count; ++i) {
+    add_link(side_a_id, side_a_name, rail_p[i], rail_p[i + 1], rail_a[i], rail_a[i + 1]);
+    add_link(side_b_id, side_b_name, rail_p[i], rail_p[i + 1], rail_b[i], rail_b[i + 1]);
+    add_link(bevel_id, bevel_name, rail_a[i], rail_a[i + 1], rail_b[i], rail_b[i + 1]);
+  }
+  if (close_loop) {
+    const size_t i = count - 1;
+    add_link(side_a_id, side_a_name, rail_p[i], rail_p[0], rail_a[i], rail_a[0]);
+    add_link(side_b_id, side_b_name, rail_p[i], rail_p[0], rail_b[i], rail_b[0]);
+    add_link(bevel_id, bevel_name, rail_a[i], rail_a[0], rail_b[i], rail_b[0]);
+  } else {
+    AddChamferReferenceTriangle(references, cap0_id, cap0_name, rail_p.front(),
+                                rail_a.front(), rail_b.front());
+    AddChamferReferenceTriangle(references, cap1_id, cap1_name, rail_p.back(),
+                                rail_b.back(), rail_a.back());
+  }
+
+  return references;
+}
+
+double ComputeChamferReferenceScore(const Vec3& point, const Vec3& normal,
+                                    const ChamferReferenceTriangle& reference,
+                                    double normal_penalty_scale) {
+  const Vec3 closest =
+      ClosestPointOnTriangle(point, reference.a, reference.b, reference.c);
+  double score = std::sqrt(DistanceSq(point, closest));
+  if (LengthSq(normal) > 1e-18 && LengthSq(reference.normal) > 1e-18) {
+    const double dot = Clamp(std::abs(Dot(normal, reference.normal)), 0.0, 1.0);
+    score += (1.0 - dot) * normal_penalty_scale;
+  }
+  return score;
+}
+
+std::vector<std::vector<uint32_t>> BuildFaceComponentsForFaceId(
+    const manifold::MeshGL& mesh, uint32_t face_id) {
+  const uint32_t tri_count = static_cast<uint32_t>(mesh.triVerts.size() / 3);
+  std::vector<uint32_t> source_triangles;
+  source_triangles.reserve(tri_count);
+  for (uint32_t tri_idx = 0; tri_idx < tri_count && tri_idx < mesh.faceID.size();
+       ++tri_idx) {
+    if (mesh.faceID[tri_idx] == face_id) source_triangles.push_back(tri_idx);
+  }
+  if (source_triangles.empty()) return {};
+
+  std::unordered_map<std::string, std::vector<uint32_t>> edge_to_triangles;
+  edge_to_triangles.reserve(source_triangles.size() * 3);
+  for (uint32_t tri_idx : source_triangles) {
+    const uint32_t tri_base = tri_idx * 3;
+    const uint32_t i0 = mesh.triVerts[tri_base + 0];
+    const uint32_t i1 = mesh.triVerts[tri_base + 1];
+    const uint32_t i2 = mesh.triVerts[tri_base + 2];
+    edge_to_triangles[std::to_string(std::min(i0, i1)) + "|" +
+                      std::to_string(std::max(i0, i1))]
+        .push_back(tri_idx);
+    edge_to_triangles[std::to_string(std::min(i1, i2)) + "|" +
+                      std::to_string(std::max(i1, i2))]
+        .push_back(tri_idx);
+    edge_to_triangles[std::to_string(std::min(i2, i0)) + "|" +
+                      std::to_string(std::max(i2, i0))]
+        .push_back(tri_idx);
+  }
+
+  std::unordered_map<uint32_t, std::vector<uint32_t>> tri_adj;
+  for (uint32_t tri_idx : source_triangles) {
+    tri_adj.emplace(tri_idx, std::vector<uint32_t>());
+  }
+  for (const auto& entry : edge_to_triangles) {
+    const std::vector<uint32_t>& tris = entry.second;
+    if (tris.size() < 2) continue;
+    for (size_t i = 0; i < tris.size(); ++i) {
+      for (size_t j = i + 1; j < tris.size(); ++j) {
+        tri_adj[tris[i]].push_back(tris[j]);
+        tri_adj[tris[j]].push_back(tris[i]);
+      }
+    }
+  }
+
+  std::unordered_set<uint32_t> seen;
+  std::vector<std::vector<uint32_t>> components;
+  for (uint32_t seed : source_triangles) {
+    if (seen.count(seed)) continue;
+    std::vector<uint32_t> stack = {seed};
+    std::vector<uint32_t> component;
+    seen.insert(seed);
+    while (!stack.empty()) {
+      const uint32_t tri_idx = stack.back();
+      stack.pop_back();
+      component.push_back(tri_idx);
+      for (uint32_t neighbor : tri_adj[tri_idx]) {
+        if (seen.count(neighbor)) continue;
+        seen.insert(neighbor);
+        stack.push_back(neighbor);
+      }
+    }
+    components.push_back(component);
+  }
+  return components;
+}
+
+double TriangleAreaFromMesh(const manifold::MeshGL& mesh, uint32_t tri_idx) {
+  const uint32_t tri_base = tri_idx * 3;
+  if (tri_base + 2 >= mesh.triVerts.size()) return 0.0;
+  const Vec3 a = MeshVertexPoint(mesh, mesh.triVerts[tri_base + 0]);
+  const Vec3 b = MeshVertexPoint(mesh, mesh.triVerts[tri_base + 1]);
+  const Vec3 c = MeshVertexPoint(mesh, mesh.triVerts[tri_base + 2]);
+  return TriangleArea(a, b, c);
+}
+
+void MergeChamferCapFaceIslands(
+    manifold::MeshGL& mesh, std::unordered_map<uint32_t, std::string>& id_to_face_name,
+    std::unordered_map<std::string, uint32_t>& face_name_to_id) {
+  struct ComponentInfo {
+    std::vector<uint32_t> triangles;
+    double area = 0.0;
+  };
+
+  auto process_cap_face = [&](const std::string& cap_face_name) {
+    const auto face_found = face_name_to_id.find(cap_face_name);
+    if (face_found == face_name_to_id.end()) return;
+    const uint32_t cap_face_id = face_found->second;
+    const std::vector<std::vector<uint32_t>> components =
+        BuildFaceComponentsForFaceId(mesh, cap_face_id);
+    if (components.size() <= 1) return;
+
+    std::vector<ComponentInfo> infos;
+    infos.reserve(components.size());
+    for (const auto& component : components) {
+      double area = 0.0;
+      for (uint32_t tri_idx : component) {
+        area += TriangleAreaFromMesh(mesh, tri_idx);
+      }
+      infos.push_back({component, area});
+    }
+    std::sort(infos.begin(), infos.end(),
+              [](const ComponentInfo& a, const ComponentInfo& b) {
+                return a.area > b.area;
+              });
+
+    std::unordered_map<std::string, std::vector<uint32_t>> edge_to_triangles;
+    const uint32_t tri_count = static_cast<uint32_t>(mesh.triVerts.size() / 3);
+    edge_to_triangles.reserve(tri_count * 3);
+    for (uint32_t tri_idx = 0; tri_idx < tri_count; ++tri_idx) {
+      const uint32_t tri_base = tri_idx * 3;
+      const uint32_t i0 = mesh.triVerts[tri_base + 0];
+      const uint32_t i1 = mesh.triVerts[tri_base + 1];
+      const uint32_t i2 = mesh.triVerts[tri_base + 2];
+      edge_to_triangles[std::to_string(std::min(i0, i1)) + "|" +
+                        std::to_string(std::max(i0, i1))]
+          .push_back(tri_idx);
+      edge_to_triangles[std::to_string(std::min(i1, i2)) + "|" +
+                        std::to_string(std::max(i1, i2))]
+          .push_back(tri_idx);
+      edge_to_triangles[std::to_string(std::min(i2, i0)) + "|" +
+                        std::to_string(std::max(i2, i0))]
+          .push_back(tri_idx);
+    }
+
+    for (size_t component_index = 1; component_index < infos.size(); ++component_index) {
+      const ComponentInfo& component = infos[component_index];
+      std::unordered_map<uint32_t, double> neighbor_scores;
+      for (uint32_t tri_idx : component.triangles) {
+        const uint32_t tri_base = tri_idx * 3;
+        const uint32_t tri_vertices[3] = {
+            mesh.triVerts[tri_base + 0],
+            mesh.triVerts[tri_base + 1],
+            mesh.triVerts[tri_base + 2],
+        };
+        for (int edge_idx = 0; edge_idx < 3; ++edge_idx) {
+          const uint32_t va = tri_vertices[edge_idx];
+          const uint32_t vb = tri_vertices[(edge_idx + 1) % 3];
+          const std::string edge_key = std::to_string(std::min(va, vb)) + "|" +
+                                       std::to_string(std::max(va, vb));
+          const auto edge_found = edge_to_triangles.find(edge_key);
+          if (edge_found == edge_to_triangles.end()) continue;
+          for (uint32_t neighbor_tri_idx : edge_found->second) {
+            if (neighbor_tri_idx == tri_idx) continue;
+            if (neighbor_tri_idx >= mesh.faceID.size()) continue;
+            const uint32_t neighbor_face_id = mesh.faceID[neighbor_tri_idx];
+            if (neighbor_face_id == cap_face_id) continue;
+            neighbor_scores[neighbor_face_id] += EdgeLength(mesh, va, vb);
+          }
+        }
+      }
+      uint32_t best_neighbor_face_id = 0;
+      double best_score = 0.0;
+      for (const auto& neighbor : neighbor_scores) {
+        if (neighbor.second > best_score) {
+          best_neighbor_face_id = neighbor.first;
+          best_score = neighbor.second;
+        }
+      }
+      if (!(best_score > 0.0)) continue;
+      for (uint32_t tri_idx : component.triangles) {
+        if (tri_idx < mesh.faceID.size()) mesh.faceID[tri_idx] = best_neighbor_face_id;
+      }
+    }
+  };
+
+  for (const auto& entry : face_name_to_id) {
+    const std::string& face_name = entry.first;
+    if (face_name.size() >= 5 &&
+        (face_name.rfind("_CAP0") == face_name.size() - 5 ||
+         face_name.rfind("_CAP1") == face_name.size() - 5)) {
+      process_cap_face(face_name);
+    }
+  }
+
+  std::unordered_map<std::string, std::string> ignored_metadata;
+  NormalizeFaceMaps(mesh, id_to_face_name, face_name_to_id, ignored_metadata);
+}
+
+void ApplyChamferFaceNamesToMesh(
+    manifold::MeshGL& mesh, const std::string& base_name,
+    const std::vector<Vec3>& rail_p, const std::vector<Vec3>& rail_a,
+    const std::vector<Vec3>& rail_b, bool close_loop,
+    std::unordered_map<uint32_t, std::string>& id_to_face_name,
+    std::unordered_map<std::string, uint32_t>& face_name_to_id) {
+  id_to_face_name.clear();
+  face_name_to_id.clear();
+  std::unordered_map<std::string, std::string> ignored_metadata;
+  const std::vector<ChamferReferenceTriangle> references =
+      BuildChamferReferenceTriangles(base_name, rail_p, rail_a, rail_b, close_loop,
+                                    id_to_face_name, face_name_to_id);
+  if (references.empty()) return;
+
+  double reference_scale = 0.0;
+  const size_t count = std::min({rail_p.size(), rail_a.size(), rail_b.size()});
+  for (size_t i = 0; i < count; ++i) {
+    reference_scale = std::max(reference_scale, std::sqrt(DistanceSq(rail_p[i], rail_a[i])));
+    reference_scale = std::max(reference_scale, std::sqrt(DistanceSq(rail_p[i], rail_b[i])));
+    reference_scale = std::max(reference_scale, std::sqrt(DistanceSq(rail_a[i], rail_b[i])));
+  }
+  const double normal_penalty_scale = std::max(1e-6, reference_scale * 0.25);
+
+  const uint32_t tri_count = static_cast<uint32_t>(mesh.triVerts.size() / 3);
+  for (uint32_t tri_idx = 0; tri_idx < tri_count && tri_idx < mesh.faceID.size();
+       ++tri_idx) {
+    const Vec3 centroid = TriangleCentroid(mesh, tri_idx);
+    const Vec3 normal = TriangleNormal(mesh, tri_idx);
+    double best_score = std::numeric_limits<double>::infinity();
+    uint32_t best_face_id = references.front().face_id;
+    for (const ChamferReferenceTriangle& reference : references) {
+      const double score = ComputeChamferReferenceScore(
+          centroid, normal, reference, normal_penalty_scale);
+      if (score < best_score) {
+        best_score = score;
+        best_face_id = reference.face_id;
+      }
+    }
+    mesh.faceID[tri_idx] = best_face_id;
+  }
+
+  MergeChamferCapFaceIslands(mesh, id_to_face_name, face_name_to_id);
+  NormalizeFaceMaps(mesh, id_to_face_name, face_name_to_id, ignored_metadata);
+}
+
+manifold::Manifold BuildChamferChainHull(
+    const std::vector<Vec3>& rail_p, const std::vector<Vec3>& rail_a,
+    const std::vector<Vec3>& rail_b, bool close_loop) {
+  const size_t count = std::min({rail_p.size(), rail_a.size(), rail_b.size()});
+  if (count < 2) {
+    throw std::runtime_error(
+        "buildChamferAuthoringState requires at least two cross sections.");
+  }
+
+  const size_t segment_count = close_loop ? count : (count - 1);
+  const double point_tol_sq = std::max(1e-18, kEps * kEps * 100.0);
+  std::vector<manifold::Manifold> hulls;
+  hulls.reserve(segment_count);
+  for (size_t i = 0; i < segment_count; ++i) {
+    const size_t next = (i + 1) % count;
+    std::vector<Vec3> segment_points = {
+        rail_p[i], rail_a[i], rail_b[i], rail_p[next], rail_a[next], rail_b[next],
+    };
+    const std::vector<manifold::vec3> hull_points =
+        BuildUniqueHullPoints(segment_points, point_tol_sq);
+    if (hull_points.size() < 4) continue;
+
+    try {
+      manifold::Manifold hull = manifold::Manifold::Hull(hull_points);
+      if (hull.Status() != manifold::Manifold::Error::NoError) continue;
+      const manifold::MeshGL mesh = hull.GetMeshGL();
+      if (mesh.NumTri() == 0 || mesh.NumVert() == 0) continue;
+      hulls.push_back(std::move(hull));
+    } catch (...) {
+      continue;
+    }
+  }
+
+  if (hulls.empty()) {
+    throw std::runtime_error(
+        "buildChamferAuthoringState could not build any hull segments.");
+  }
+  if (hulls.size() == 1) return hulls.front();
+  return manifold::Manifold::BatchBoolean(hulls, manifold::OpType::Add);
+}
+
+emscripten::val BuildChamferChainHullSnapshot(
+    const std::string& name, const std::string& base_name,
+    const std::vector<Vec3>& rail_p,
+    const std::vector<Vec3>& rail_a, const std::vector<Vec3>& rail_b,
+    bool close_loop) {
+  manifold::Manifold chamfer_manifold =
+      BuildChamferChainHull(rail_p, rail_a, rail_b, close_loop);
+  manifold::MeshGL mesh = chamfer_manifold.GetMeshGL();
+  std::unordered_map<uint32_t, std::string> id_to_face_name;
+  std::unordered_map<std::string, uint32_t> face_name_to_id;
+  ApplyChamferFaceNamesToMesh(mesh, base_name, rail_p, rail_a, rail_b,
+                              close_loop, id_to_face_name, face_name_to_id);
+  emscripten::val snapshot =
+      BuildSnapshotFromMesh(mesh, id_to_face_name, face_name_to_id, {}, {}, {},
+                            name);
+  snapshot.set("name", name);
+  snapshot.set("nativeKernel", true);
+  snapshot.set("chamferBuildMode", "CHAIN_HULL");
+  if (!close_loop) {
+    snapshot.set("chamferCapStartPoints",
+                 ToPointArray(BuildChamferCapTriangle(rail_p, rail_a, rail_b, false)));
+    snapshot.set("chamferCapEndPoints",
+                 ToPointArray(BuildChamferCapTriangle(rail_p, rail_a, rail_b, true)));
+  }
+  return snapshot;
+}
+
 emscripten::val BuildChamferAuthoringState(const emscripten::val& options) {
   const emscripten::val snapshot = options["snapshot"];
   if (snapshot.isUndefined() || snapshot.isNull()) {
@@ -4259,6 +5072,10 @@ emscripten::val BuildChamferAuthoringState(const emscripten::val& options) {
   const bool flip_side =
       !(options["flipSide"].isUndefined() || options["flipSide"].isNull()) &&
       options["flipSide"].as<bool>();
+  const bool debug_cross_sections =
+      !(options["debugCrossSections"].isUndefined() ||
+        options["debugCrossSections"].isNull()) &&
+      options["debugCrossSections"].as<bool>();
   const std::string direction_raw = ReadString(options["direction"], "INSET");
   const std::string direction = direction_raw == "OUTSET" ? "OUTSET" : "INSET";
   std::string name = ReadString(options["name"], "CHAMFER");
@@ -4378,23 +5195,18 @@ emscripten::val BuildChamferAuthoringState(const emscripten::val& options) {
 
   std::vector<std::vector<Vec3>*> rails = {&rail_p_used, &rail_a_used, &rail_b_used};
   ResolveChamferSelfIntersections(rails, closed_loop);
+  const double max_cap_tangent_offset = std::max(1e-4, distance * 0.2);
+  SnapChamferOpenEndCapsToEndpointPlanes(rail_p, tangents, rail_p_used, rail_a_used,
+                                         rail_b_used, closed_loop,
+                                         max_cap_tangent_offset);
 
   const std::string base_name = "CHAMFER_" + face_a_name + "|" + face_b_name;
-  SnapshotBuilder builder;
-  BuildChamferPrismNamed(builder, base_name, rail_p_used, rail_a_used, rail_b_used,
-                         closed_loop);
-  emscripten::val out = BuildSnapshot(builder);
-  out.set("name", name);
-  out.set("nativeKernel", true);
-
-  if (!closed_loop) {
-    BrepSolidCore core;
-    core.SetAuthoringState(out);
-    core.PushFace(base_name + "_CAP0", 0.0001);
-    core.PushFace(base_name + "_CAP1", 0.0001);
-    out = core.GetAuthoringState();
-    out.set("name", name);
-    out.set("nativeKernel", true);
+  emscripten::val out = BuildChamferChainHullSnapshot(
+      name, base_name, rail_p_used, rail_a_used, rail_b_used, closed_loop);
+  if (debug_cross_sections) {
+    out.set("debugCrossSectionSnapshots",
+            BuildChamferCrossSectionSnapshots(base_name, rail_p_used, rail_a_used,
+                                              rail_b_used));
   }
 
   return out;
@@ -4444,6 +5256,8 @@ emscripten::val BuildChamferWorkflowAuthoringState(const emscripten::val& option
   direction_decision.set("fallbackDirection", fallback_direction);
 
   const uint32_t edge_count = edges["length"].as<uint32_t>();
+  std::vector<BuiltChamferEntry> built_entries;
+  built_entries.reserve(edge_count);
   uint32_t combine_index = 0;
   uint32_t debug_index = 0;
   int inset_edges = 0;
@@ -4498,6 +5312,11 @@ emscripten::val BuildChamferWorkflowAuthoringState(const emscripten::val& option
     }
 
     emscripten::val build_options = emscripten::val::object();
+    const bool closed_loop =
+        !(edge["closedLoop"].isUndefined() || edge["closedLoop"].isNull()) &&
+        edge["closedLoop"].as<bool>();
+    const std::string chamfer_name =
+        ReadString(edge["name"], edge_reference.c_str());
     build_options.set("snapshot", snapshot);
     build_options.set("faceAName", face_a_name);
     build_options.set("faceBName", face_b_name);
@@ -4505,11 +5324,8 @@ emscripten::val BuildChamferWorkflowAuthoringState(const emscripten::val& option
     build_options.set("distance", distance);
     build_options.set("direction", edge_direction);
     build_options.set("inflate", edge_direction == "OUTSET" ? -inflate_raw : inflate_raw);
-    build_options.set("closedLoop",
-                      !(edge["closedLoop"].isUndefined() ||
-                        edge["closedLoop"].isNull()) &&
-                          edge["closedLoop"].as<bool>());
-    build_options.set("name", ReadString(edge["name"], edge_reference.c_str()));
+    build_options.set("closedLoop", closed_loop);
+    build_options.set("name", chamfer_name);
     if (!edge["sampleCount"].isUndefined() && !edge["sampleCount"].isNull()) {
       build_options.set("sampleCount", edge["sampleCount"]);
     }
@@ -4520,6 +5336,9 @@ emscripten::val BuildChamferWorkflowAuthoringState(const emscripten::val& option
     if (!edge["flipSide"].isUndefined() && !edge["flipSide"].isNull()) {
       build_options.set("flipSide", edge["flipSide"]);
     }
+    if (debug) {
+      build_options.set("debugCrossSections", true);
+    }
 
     emscripten::val chamfer_snapshot;
     try {
@@ -4527,6 +5346,30 @@ emscripten::val BuildChamferWorkflowAuthoringState(const emscripten::val& option
     } catch (...) {
       continue;
     }
+
+    BuiltChamferEntry built;
+    built.index = i;
+    built.chamfer_name = chamfer_name;
+    built.edge_reference = edge_reference;
+    built.face_a_name = face_a_name;
+    built.face_b_name = face_b_name;
+    built.edge_direction = edge_direction;
+    built.final_snapshot = chamfer_snapshot;
+    built.edge_polyline = ReadPoints(edge["polyline"], "polyline");
+    built.closed_loop = closed_loop;
+    const std::string base_name = "CHAMFER_" + face_a_name + "|" + face_b_name;
+    built.cap_start_face_name = base_name + "_CAP0";
+    built.cap_end_face_name = base_name + "_CAP1";
+    const emscripten::val cap_start_points = chamfer_snapshot["chamferCapStartPoints"];
+    if (!cap_start_points.isUndefined() && !cap_start_points.isNull()) {
+      built.cap_start_points =
+          ReadPoints(cap_start_points, "chamferCapStartPoints");
+    }
+    const emscripten::val cap_end_points = chamfer_snapshot["chamferCapEndPoints"];
+    if (!cap_end_points.isUndefined() && !cap_end_points.isNull()) {
+      built.cap_end_points = ReadPoints(cap_end_points, "chamferCapEndPoints");
+    }
+    built_entries.push_back(built);
 
     emscripten::val combine_entry = emscripten::val::object();
     combine_entry.set("snapshot", chamfer_snapshot);
@@ -4536,13 +5379,29 @@ emscripten::val BuildChamferWorkflowAuthoringState(const emscripten::val& option
     if (debug) {
       emscripten::val debug_entry = emscripten::val::object();
       debug_entry.set("kind", "chamferTool");
-      debug_entry.set("name",
-                      ReadString(edge["name"], edge_reference.c_str()));
+      debug_entry.set("name", chamfer_name);
       debug_entry.set("snapshot", chamfer_snapshot);
       if (!direction_detail.isNull() && !direction_detail.isUndefined()) {
         debug_entry.set("directionDetail", direction_detail);
       }
       debug_snapshots.set(debug_index++, debug_entry);
+
+      const emscripten::val cross_section_snapshots =
+          chamfer_snapshot["debugCrossSectionSnapshots"];
+      if (!cross_section_snapshots.isUndefined() &&
+          !cross_section_snapshots.isNull()) {
+        const uint32_t cross_section_count =
+            cross_section_snapshots["length"].as<uint32_t>();
+        for (uint32_t cross_section_index = 0;
+             cross_section_index < cross_section_count; ++cross_section_index) {
+          const emscripten::val cross_section_entry =
+              cross_section_snapshots[cross_section_index];
+          if (cross_section_entry.isUndefined() || cross_section_entry.isNull()) {
+            continue;
+          }
+          debug_snapshots.set(debug_index++, cross_section_entry);
+        }
+      }
     }
   }
 
@@ -4551,6 +5410,88 @@ emscripten::val BuildChamferWorkflowAuthoringState(const emscripten::val& option
   direction_decision.set("outsetEdges", outset_edges);
   direction_decision.set("fallbackEdges", fallback_edges);
   direction_decision.set("ambiguousEdges", ambiguous_edges);
+
+  const double distance_abs = std::abs(distance);
+  const double endpoint_tol = std::max(1e-6, distance_abs * 1e-4);
+  const double cap_point_tol = std::max(1e-7, endpoint_tol * 0.5);
+  const double tangent_dot_threshold = std::cos(45.0 * kPi / 180.0);
+  const double min_bridge_gap = std::max(cap_point_tol * 0.5, 1e-8);
+  const double max_bridge_gap = std::max(endpoint_tol * 8.0, distance_abs * 0.1);
+  uint32_t tangent_cap_bridge_count = 0;
+  std::unordered_set<std::string> emitted_bridge_keys;
+
+  for (size_t i = 0; i < built_entries.size(); ++i) {
+    const BuiltChamferEntry& entry_a = built_entries[i];
+    if (entry_a.closed_loop || entry_a.edge_polyline.size() < 2) continue;
+    for (size_t j = i + 1; j < built_entries.size(); ++j) {
+      const BuiltChamferEntry& entry_b = built_entries[j];
+      if (entry_b.closed_loop || entry_b.edge_polyline.size() < 2) continue;
+      if (entry_a.edge_direction != entry_b.edge_direction) continue;
+
+      const SharedEndpointInfo shared =
+          ResolveSharedEndpointInfo(entry_a.edge_polyline, entry_b.edge_polyline,
+                                    endpoint_tol);
+      if (!shared.valid) continue;
+      if (!(std::isfinite(shared.abs_tangent_dot)) ||
+          shared.abs_tangent_dot < tangent_dot_threshold) {
+        continue;
+      }
+
+      const std::string source_edge_name_a =
+          entry_a.edge_reference.empty() ? entry_a.chamfer_name : entry_a.edge_reference;
+      const std::string source_edge_name_b =
+          entry_b.edge_reference.empty() ? entry_b.chamfer_name : entry_b.edge_reference;
+      const std::string bridge_key =
+          (source_edge_name_a < source_edge_name_b
+               ? source_edge_name_a + "|" + source_edge_name_b
+               : source_edge_name_b + "|" + source_edge_name_a) +
+          ":" + std::to_string(shared.a_end_index) + ":" +
+          std::to_string(shared.b_end_index);
+      if (!emitted_bridge_keys.emplace(bridge_key).second) continue;
+
+      const ChamferEndCapData cap_a =
+          ResolveChamferEndCapData(entry_a, shared.a_end_index, cap_point_tol);
+      const ChamferEndCapData cap_b =
+          ResolveChamferEndCapData(entry_b, shared.b_end_index, cap_point_tol);
+      if (cap_a.points.size() < 3 || cap_b.points.size() < 3) continue;
+
+      const double cap_gap = MinimumPointSetDistance(cap_a.points, cap_b.points);
+      if (!(std::isfinite(cap_gap)) || !(cap_gap > min_bridge_gap) ||
+          !(cap_gap <= max_bridge_gap)) {
+        continue;
+      }
+
+      const std::string bridge_name =
+          BuildDeterministicBridgeName(feature_id, source_edge_name_a,
+                                       source_edge_name_b, "TANGENT_CAP_BRIDGE") +
+          "_" + std::to_string(shared.a_end_index) + "_" +
+          std::to_string(shared.b_end_index);
+
+      const ChamferCapBridgeCandidate bridge =
+          BuildChamferCapBridgeCandidate(cap_a, cap_b, bridge_name,
+                                        max_bridge_gap * 2.0);
+      if (!bridge.valid || bridge.snapshot.isUndefined() ||
+          bridge.snapshot.isNull()) {
+        continue;
+      }
+      const emscripten::val bridge_snapshot = bridge.snapshot;
+
+      emscripten::val combine_entry = emscripten::val::object();
+      combine_entry.set("snapshot", bridge_snapshot);
+      combine_entry.set("direction", entry_a.edge_direction);
+      combine_entries.set(combine_index++, combine_entry);
+      tangent_cap_bridge_count += 1;
+
+      if (debug) {
+        emscripten::val debug_entry = emscripten::val::object();
+        debug_entry.set("kind", "tangentCapBridge");
+        debug_entry.set("name", bridge_name);
+        debug_entry.set("snapshot", bridge_snapshot);
+        debug_snapshots.set(debug_index++, debug_entry);
+      }
+    }
+  }
+  direction_decision.set("tangentCapBridges", tangent_cap_bridge_count);
 
   emscripten::val combine_options = emscripten::val::object();
   combine_options.set("targetSnapshot", snapshot);

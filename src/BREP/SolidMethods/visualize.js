@@ -351,20 +351,31 @@ export function visualize(options = {}) {
                 const edgeObj = new Edge(g);
                 edgeObj.name = aux?.name || 'CENTERLINE';
                 edgeObj.closedLoop = !!aux?.closedLoop;
+                const behavesLikeBoundary = !aux?.centerline && (!!aux?.faceA || !!aux?.faceB);
                 edgeObj.userData = {
                     ...(edgeObj.userData || {}),
+                    faceA: aux?.faceA || null,
+                    faceB: aux?.faceB || null,
                     polylineLocal: pts,
                     polylineWorld: !!aux?.polylineWorld,
                     centerline: !!aux?.centerline,
-                    auxEdge: true,
+                    auxEdge: !behavesLikeBoundary,
                 };
                 edgeObj.parentSolid = this;
+                const fa = aux?.faceA ? faceMap.get(aux.faceA) : null;
+                const fb = aux?.faceB ? faceMap.get(aux.faceB) : null;
+                if (fa) fa.edges.push(edgeObj);
+                if (fb) fb.edges.push(edgeObj);
+                if (fa) edgeObj.faces.push(fa);
+                if (fb) edgeObj.faces.push(fb);
                 try {
-                    const key = (aux?.materialKey || 'OVERLAY').toUpperCase();
+                    const fallbackKey = behavesLikeBoundary ? 'SECTION' : 'OVERLAY';
+                    const requestedKey = (aux?.materialKey || fallbackKey).toUpperCase();
+                    const key = behavesLikeBoundary && requestedKey === 'BASE' ? 'SECTION' : requestedKey;
                     const edgeMats = CADmaterials?.EDGE || {};
                     const mat = edgeMats[key] || (key === 'OVERLAY' ? edgeMats.OVERLAY : null) || edgeMats.BASE;
                     let appliedMat = mat;
-                    const wantsOverlay = key !== 'BASE';
+                    const wantsOverlay = key === 'OVERLAY' || key === 'THREAD_SYMBOLIC_MAJOR';
                     if (mat && wantsOverlay) {
                         const alreadyOverlay = mat.depthTest === false && mat.depthWrite === false;
                         if (!alreadyOverlay) {
@@ -392,7 +403,7 @@ export function visualize(options = {}) {
                     if (appliedMat) edgeObj.material = appliedMat;
                     if (appliedMat) SelectionState.setBaseMaterial(edgeObj, appliedMat, { force: false });
                     try { edgeObj.computeLineDistances(); } catch { }
-                    edgeObj.renderOrder = 10020;
+                    edgeObj.renderOrder = behavesLikeBoundary ? 2 : 10020;
                 } catch { }
                 if (!edgeObj.userData) edgeObj.userData = {};
                 edgeObj.userData.__defaultMaterial = edgeObj.material;

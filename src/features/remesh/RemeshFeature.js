@@ -35,7 +35,7 @@ const inputParamsSchema = {
     type: "number",
     step: 0.1,
     default_value: 0.1,
-    hint: "Simplify tolerance (used in Simplify mode)",
+    hint: "Simplify tolerance and pre-weld epsilon (used in Simplify mode)",
   },
 };
 
@@ -71,6 +71,18 @@ export class RemeshFeature {
     if (mode === 'simplify') {
       const T = Number(this.inputParams.tolerance);
       const tol = Number.isFinite(T) && T >= 0 ? T : undefined;
+      if (Number.isFinite(tol) && tol > 0) {
+        try {
+          if (typeof outSolid._weldVerticesByEpsilon === 'function') {
+            outSolid._weldVerticesByEpsilon(tol, { rebuildManifold: false });
+          }
+          if (typeof outSolid.fixTriangleWindingsByAdjacency === 'function') {
+            outSolid.fixTriangleWindingsByAdjacency();
+          }
+        } catch (e) {
+          console.warn('[RemeshFeature] Pre-simplify weld failed; continuing with simplify.', e);
+        }
+      }
       try {
         if (tol === undefined) outSolid.simplify();
         else outSolid.simplify(tol);

@@ -1,30 +1,57 @@
-node_modules/*
-dist/*
-dist-kernel/*
-*key*
-*aiCoder/llmConfig*
-*aiCoder/backups/*
-tests/results/*
-tests/test-run.log
-test-results/*
-.parcel-cache/*
-.vscode/*
-.aiCoder/prompts/customPrompts.json
-.aiCoder/prompts/default-plan-prompt.md
-.aiCoder/prompts/default-system-prompt.md
-.aiCoder/prompts/plan-edit-prompt.md
-.aiCoder/prompts/snippet-*
-.aiCoder/backups/*
-project.md
-trianglesTest.js/results
-about.html
-junk.*
-public/docs/*
-public/help/*
-public/fonts
-public/assets/*
-manifold-plus/build/*
-manifold-plus/dist/*
-pnpm-lock.yaml
-pnpm-lock.yaml
-.pnpm-store/*
+# Dependencies
+/node_modules/
+/.pnpm-store/
+
+# Build outputs
+/dist/
+/dist-kernel/
+/about.html
+/junk.*
+/public/assets/
+/public/docs/
+/public/help/
+/public/fonts
+/manifold-plus/build/
+/manifold-plus/dist/
+
+# Native toolchain caches and generated metadata
+/.emscripten_cache/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+compile_commands.json
+build.ninja
+.ninja_deps
+.ninja_log
+
+# Test artifacts
+/tests/results/
+/tests/test-run.log
+/test-results/
+/coverage/
+/playwright-report/
+
+# Bundler and editor caches
+/.parcel-cache/
+/.vscode/
+.eslintcache
+*.tsbuildinfo
+
+# Local tool state
+/.claude/
+/.aiCoder/llmConfig*
+/.aiCoder/backups/
+/.aiCoder/prompts/customPrompts.json
+/.aiCoder/prompts/default-plan-prompt.md
+/.aiCoder/prompts/default-system-prompt.md
+/.aiCoder/prompts/plan-edit-prompt.md
+/.aiCoder/prompts/snippet-*
+/project.md
+/trianglesTest.js/results
+
+# Local secrets
+*.key
+*.pem
+*.p12
+*.crt

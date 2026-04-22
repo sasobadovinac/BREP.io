@@ -41,11 +41,54 @@ export async function test_cppSolidNative_setEpsilon_welds_vertices() {
     solid.setEpsilon(1e-5);
 
     const afterVertices = solid._vertProperties.length / 3;
-    if (afterVertices !== 4) {
-        throw new Error(`Expected 4 authored vertices after weld, received ${afterVertices}.`);
+    if (afterVertices !== 5) {
+        throw new Error(`Expected authored vertex count to stay 5 after setEpsilon, received ${afterVertices}.`);
     }
     if (solid._triVerts.length / 3 !== 4) {
         throw new Error(`Expected 4 triangles after weld, received ${solid._triVerts.length / 3}.`);
+    }
+    const zA = solid._vertProperties[11];
+    const zB = solid._vertProperties[14];
+    if (!approx(zA, 1.00000005, 1e-6) || !approx(zB, 1.00000005, 1e-6)) {
+        throw new Error(`Expected welded authored vertices to share z=1.00000005, received ${zA} and ${zB}.`);
+    }
+    if (!solid._manifold) {
+        throw new Error("Expected setEpsilon to rebuild a manifold after aligning the authored vertices.");
+    }
+}
+
+export async function test_cppSolidNative_setEpsilon_merges_cell_boundary_pair_and_rebuilds_manifold() {
+    if (manifoldBuildSource !== "local" || !cppSolidCoreHasNativeWeldVerticesByEpsilon) {
+        return;
+    }
+
+    const solid = new Solid();
+    const A = [0, 0, 0];
+    const B = [1, 0, 0];
+    const C = [0, 1, 0];
+    const D = [0, 0, 0.99995];
+    const D2 = [0, 0, 1.00004];
+
+    solid
+        .addTriangle("F1", A, C, B)
+        .addTriangle("F2", A, B, D)
+        .addTriangle("F3", A, D2, C)
+        .addTriangle("F4", B, C, D);
+
+    solid.setEpsilon(1e-4);
+
+    const afterVertices = solid._vertProperties.length / 3;
+    if (afterVertices !== 5) {
+        throw new Error(`Expected authored vertex count to stay 5 after cell-boundary weld, received ${afterVertices}.`);
+    }
+    if (solid._triVerts.length / 3 !== 4) {
+        throw new Error(`Expected 4 triangles after cell-boundary weld, received ${solid._triVerts.length / 3}.`);
+    }
+    if (!approx(solid._vertProperties[11], 0.999995, 1e-6) || !approx(solid._vertProperties[14], 0.999995, 1e-6)) {
+        throw new Error(`Expected cell-boundary vertices to share z=0.999995, received ${solid._vertProperties[11]} and ${solid._vertProperties[14]}.`);
+    }
+    if (!solid._manifold) {
+        throw new Error("Expected setEpsilon to rebuild a manifold result after welding the closed tetra shell.");
     }
 }
 
@@ -829,5 +872,42 @@ export async function test_cppSolidNative_booleanCombinedAuthoringState_preserve
     const toolEdgeMeta = result.getEdgeMetadata?.("CPP_BOOL_TOOL_NX|CPP_BOOL_TOOL_NY[0]") || {};
     if (toolEdgeMeta.marker !== "tool-edge" || toolEdgeMeta.smooth !== false) {
         throw new Error("Expected native boolean builder to preserve merged edge metadata.");
+    }
+}
+
+export async function test_cppSolidNative_booleanResults_apply_fixed_post_weld_epsilon() {
+    if (manifoldBuildSource !== "local") {
+        return;
+    }
+
+    const makePair = () => {
+        const base = new Cube({ x: 10, y: 10, z: 10, name: "BOOL_WELD_BASE" });
+        const tool = new Cube({ x: 6, y: 6, z: 6, name: "BOOL_WELD_TOOL" });
+        tool.bakeTRS({
+            position: [4, 2, 2],
+            rotationEuler: [0, 0, 0],
+            scale: [1, 1, 1],
+        });
+        return { base, tool };
+    };
+
+    const unionPair = makePair();
+    const unioned = unionPair.base.union(unionPair.tool);
+    const subtractPair = makePair();
+    const subtracted = subtractPair.base.subtract(subtractPair.tool);
+    const intersectPair = makePair();
+    const intersected = intersectPair.base.intersect(intersectPair.tool);
+
+    for (const [label, result] of [
+        ["union", unioned],
+        ["subtract", subtracted],
+        ["intersect", intersected],
+    ]) {
+        if (!approx(result?._epsilon, 0.0015, 1e-12)) {
+            throw new Error(`Expected ${label} result to set fixed post-boolean weld epsilon 0.0015, received ${result?._epsilon}.`);
+        }
+        if (!result?._manifold) {
+            throw new Error(`Expected ${label} result to rebuild its manifold after the fixed post-boolean weld.`);
+        }
     }
 }

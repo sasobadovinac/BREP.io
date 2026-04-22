@@ -3375,8 +3375,10 @@ export class Viewer {
                     if (!edgeColor && solidEdgeColor) edgeColor = solidEdgeColor;
 
                     const isBoundary = !!(child.userData?.faceA || child.userData?.faceB);
-                    const baseEdge = isBoundary ? (CADmaterials.EDGE?.BASE ?? child.material)
-                        : (child.userData?.__defaultMaterial ?? child.material);
+                    const defaultEdge = child.userData?.__defaultMaterial ?? child.material;
+                    const baseEdge = isBoundary
+                        ? (defaultEdge ?? CADmaterials.EDGE?.BASE ?? child.material)
+                        : defaultEdge;
                     applyMaterial(child, baseEdge, edgeColor);
                 }
             }

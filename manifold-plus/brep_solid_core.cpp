@@ -590,113 +590,114 @@ void BrepSolidCore::WeldVerticesByEpsilon(double eps) {
   const uint32_t nv = VertexCount();
   if (nv == 0) return;
 
-  std::unordered_map<std::string, uint32_t> cell_map;
-  cell_map.reserve(nv);
-
-  std::vector<uint32_t> rep_of(nv);
-  for (uint32_t i = 0; i < nv; ++i) rep_of[i] = i;
-  bool changed = false;
-
-  const auto to_cell = [eps](double value) {
-    return std::llround(value / eps);
+  const double eps_sq = eps * eps;
+  auto to_cell = [eps](double value) {
+    return static_cast<long long>(std::floor(value / eps));
+  };
+  auto make_cell_key = [](long long cx, long long cy, long long cz) {
+    std::ostringstream key_stream;
+    key_stream << cx << ',' << cy << ',' << cz;
+    return key_stream.str();
+  };
+  auto distance_sq = [&](uint32_t a, uint32_t b) {
+    const uint32_t abase = a * num_prop_;
+    const uint32_t bbase = b * num_prop_;
+    const double dx = static_cast<double>(vert_properties_[abase + 0]) -
+                      static_cast<double>(vert_properties_[bbase + 0]);
+    const double dy = static_cast<double>(vert_properties_[abase + 1]) -
+                      static_cast<double>(vert_properties_[bbase + 1]);
+    const double dz = static_cast<double>(vert_properties_[abase + 2]) -
+                      static_cast<double>(vert_properties_[bbase + 2]);
+    return dx * dx + dy * dy + dz * dz;
   };
 
+  std::unordered_map<std::string, std::vector<uint32_t>> cell_map;
+  cell_map.reserve(nv * 2);
+  std::vector<std::array<long long, 3>> vertex_cells(nv);
   for (uint32_t i = 0; i < nv; ++i) {
     const uint32_t base = i * num_prop_;
     const long long cx = to_cell(vert_properties_[base + 0]);
     const long long cy = to_cell(vert_properties_[base + 1]);
     const long long cz = to_cell(vert_properties_[base + 2]);
+    vertex_cells[i] = {cx, cy, cz};
+    cell_map[make_cell_key(cx, cy, cz)].push_back(i);
+  }
 
-    std::ostringstream key_stream;
-    key_stream << cx << ',' << cy << ',' << cz;
-    const std::string key = key_stream.str();
-
-    const auto found = cell_map.find(key);
-    if (found == cell_map.end()) {
-      cell_map.emplace(key, i);
-      rep_of[i] = i;
-    } else {
-      rep_of[i] = found->second;
-      changed = true;
+  std::vector<uint32_t> parent(nv);
+  std::vector<uint8_t> rank(nv, 0);
+  for (uint32_t i = 0; i < nv; ++i) parent[i] = i;
+  auto find_root = [&](uint32_t value) {
+    uint32_t root = value;
+    while (parent[root] != root) root = parent[root];
+    while (parent[value] != value) {
+      const uint32_t next = parent[value];
+      parent[value] = root;
+      value = next;
     }
-  }
+    return root;
+  };
+  auto unite = [&](uint32_t a, uint32_t b) {
+    a = find_root(a);
+    b = find_root(b);
+    if (a == b) return false;
+    if (rank[a] < rank[b]) std::swap(a, b);
+    parent[b] = a;
+    if (rank[a] == rank[b]) rank[a] += 1;
+    return true;
+  };
 
-  std::vector<uint32_t> new_tri_verts;
-  std::vector<uint32_t> new_tri_ids;
-  new_tri_verts.reserve(tri_verts_.size());
-  new_tri_ids.reserve(tri_ids_.size());
-  std::vector<uint8_t> used(nv, 0);
-
-  for (uint32_t tri_idx = 0; tri_idx < tri_ids_.size(); ++tri_idx) {
-    const uint32_t tri_base = tri_idx * 3;
-    if (tri_base + 2 >= tri_verts_.size()) break;
-
-    const uint32_t a = rep_of[tri_verts_[tri_base + 0]];
-    const uint32_t b = rep_of[tri_verts_[tri_base + 1]];
-    const uint32_t c = rep_of[tri_verts_[tri_base + 2]];
-    if (a == b || b == c || c == a) continue;
-
-    const uint32_t abase = a * num_prop_;
-    const uint32_t bbase = b * num_prop_;
-    const uint32_t cbase = c * num_prop_;
-
-    const double ax = vert_properties_[abase + 0];
-    const double ay = vert_properties_[abase + 1];
-    const double az = vert_properties_[abase + 2];
-    const double bx = vert_properties_[bbase + 0];
-    const double by = vert_properties_[bbase + 1];
-    const double bz = vert_properties_[bbase + 2];
-    const double cx = vert_properties_[cbase + 0];
-    const double cy = vert_properties_[cbase + 1];
-    const double cz = vert_properties_[cbase + 2];
-
-    const double ux = bx - ax;
-    const double uy = by - ay;
-    const double uz = bz - az;
-    const double vx = cx - ax;
-    const double vy = cy - ay;
-    const double vz = cz - az;
-    const double nx = uy * vz - uz * vy;
-    const double ny = uz * vx - ux * vz;
-    const double nz = ux * vy - uy * vx;
-    const double area2 = nx * nx + ny * ny + nz * nz;
-    if (!(area2 > 0.0)) continue;
-
-    new_tri_verts.push_back(a);
-    new_tri_verts.push_back(b);
-    new_tri_verts.push_back(c);
-    new_tri_ids.push_back(tri_ids_[tri_idx]);
-    used[a] = 1;
-    used[b] = 1;
-    used[c] = 1;
-  }
-
-  if (!changed && new_tri_verts.size() == tri_verts_.size() &&
-      new_tri_ids.size() == tri_ids_.size()) {
-    return;
-  }
-
-  std::vector<int32_t> old_to_new(nv, -1);
-  std::vector<float> new_vert_properties;
-  new_vert_properties.reserve(vert_properties_.size());
-
-  uint32_t write = 0;
+  bool changed = false;
   for (uint32_t i = 0; i < nv; ++i) {
-    if (!used[i]) continue;
-    old_to_new[i] = static_cast<int32_t>(write++);
-    const uint32_t base = i * num_prop_;
-    for (uint32_t prop = 0; prop < num_prop_; ++prop) {
-      new_vert_properties.push_back(vert_properties_[base + prop]);
+    const auto [cx, cy, cz] = vertex_cells[i];
+    for (long long dx = -1; dx <= 1; ++dx) {
+      for (long long dy = -1; dy <= 1; ++dy) {
+        for (long long dz = -1; dz <= 1; ++dz) {
+          const auto found =
+              cell_map.find(make_cell_key(cx + dx, cy + dy, cz + dz));
+          if (found == cell_map.end()) continue;
+          for (const uint32_t other : found->second) {
+            if (other <= i) continue;
+            if (distance_sq(i, other) > eps_sq) continue;
+            if (unite(i, other)) changed = true;
+          }
+        }
+      }
     }
   }
 
-  for (uint32_t& index : new_tri_verts) {
-    index = static_cast<uint32_t>(old_to_new[index]);
+  struct ClusterAccum {
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
+    uint32_t count = 0;
+  };
+  std::unordered_map<uint32_t, ClusterAccum> cluster_map;
+  cluster_map.reserve(nv);
+  for (uint32_t i = 0; i < nv; ++i) {
+    const uint32_t root = find_root(i);
+    const uint32_t base = i * num_prop_;
+    auto& cluster = cluster_map[root];
+    cluster.x += static_cast<double>(vert_properties_[base + 0]);
+    cluster.y += static_cast<double>(vert_properties_[base + 1]);
+    cluster.z += static_cast<double>(vert_properties_[base + 2]);
+    cluster.count += 1;
   }
 
-  vert_properties_.swap(new_vert_properties);
-  tri_verts_.swap(new_tri_verts);
-  tri_ids_.swap(new_tri_ids);
+  if (!changed) return;
+
+  for (uint32_t i = 0; i < nv; ++i) {
+    const uint32_t root = find_root(i);
+    const auto cluster = cluster_map.find(root);
+    if (cluster == cluster_map.end() || cluster->second.count == 0) continue;
+    const uint32_t base = i * num_prop_;
+    vert_properties_[base + 0] = static_cast<float>(
+        cluster->second.x / static_cast<double>(cluster->second.count));
+    vert_properties_[base + 1] = static_cast<float>(
+        cluster->second.y / static_cast<double>(cluster->second.count));
+    vert_properties_[base + 2] = static_cast<float>(
+        cluster->second.z / static_cast<double>(cluster->second.count));
+  }
+
   RebuildVertexKeyIndex();
 }
 

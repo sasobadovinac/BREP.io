@@ -3,6 +3,8 @@ import {
     getSolidGeometryCounts,
     resolveSingleSolidFromEdges,
 } from "../edgeFeatureUtils.js";
+import { BREP } from "../../BREP/BREP.js";
+import { SelectionState } from "../../UI/SelectionState.js";
 
 const inputParamsSchema = {
     id: {
@@ -36,11 +38,161 @@ const inputParamsSchema = {
         hint: "Choose chamfer side automatically (AUTO) or force INSET/OUTSET",
     },
     debug: {
-        type: "boolean",
-        default_value: false,
-        hint: "Draw diagnostic helpers for section frames",
+        type: "options",
+        options: [
+            "None",
+            "triangle cross sections only",
+            "chamfer solid only",
+            "chamfer solid and cross sections",
+        ],
+        default_value: "None",
+        hint: "Choose which chamfer debug geometry to draw",
     }
 };
+
+function normalizeChamferDebugMode(rawValue) {
+    if (rawValue === true) return "chamfer solid and cross sections";
+    if (rawValue === false || rawValue == null) return "None";
+    const value = String(rawValue).trim().toLowerCase();
+    if (value === "triangle cross sections only") return "triangle cross sections only";
+    if (value === "chamfer solid only") return "chamfer solid only";
+    if (value === "chamfer solid and cross sections") return "chamfer solid and cross sections";
+    if (value === "none") return "None";
+    return "None";
+}
+
+function isSectionDebugSolid(debugSolid) {
+    return /_SECTION_\d+$/.test(String(debugSolid?.name || ""))
+        || String(debugSolid?.__debugChamferKind || "") === "chamferCrossSection";
+}
+
+function shouldIncludeChamferDebugSolid(debugMode, debugSolid) {
+    const isSection = isSectionDebugSolid(debugSolid);
+    switch (debugMode) {
+        case "triangle cross sections only":
+            return isSection;
+        case "chamfer solid only":
+            return !isSection;
+        case "chamfer solid and cross sections":
+            return true;
+        case "None":
+        default:
+            return false;
+    }
+}
+
+function buildSketchBasisFromFace(face) {
+    const pos = face?.geometry?.getAttribute?.("position");
+    if (!pos || pos.count < 3) return null;
+    const THREE = BREP.THREE;
+    const origin = new THREE.Vector3(pos.getX(0), pos.getY(0), pos.getZ(0));
+    const px = new THREE.Vector3(pos.getX(1), pos.getY(1), pos.getZ(1)).sub(origin);
+    const py = new THREE.Vector3(pos.getX(2), pos.getY(2), pos.getZ(2)).sub(origin);
+    const x = px.clone().normalize();
+    if (x.lengthSq() < 1e-20) return null;
+    const normal = x.clone().cross(py).normalize();
+    if (normal.lengthSq() < 1e-20) return null;
+    const y = new THREE.Vector3().crossVectors(normal, x).normalize();
+    if (y.lengthSq() < 1e-20) return null;
+    return {
+        origin: [origin.x, origin.y, origin.z],
+        x: [x.x, x.y, x.z],
+        y: [y.x, y.y, y.z],
+        z: [normal.x, normal.y, normal.z],
+    };
+}
+
+function applySketchProfileFaceStyle(face) {
+    if (!face) return;
+    try {
+        const sketchMat = (face.material && typeof face.material.clone === "function")
+            ? face.material.clone()
+            : null;
+        if (!sketchMat) return;
+        sketchMat.side = BREP.THREE.DoubleSide;
+        sketchMat.polygonOffset = true;
+        sketchMat.polygonOffsetFactor = -2;
+        sketchMat.polygonOffsetUnits = 1;
+        sketchMat.needsUpdate = true;
+        SelectionState.setBaseMaterial(face, sketchMat, { force: false });
+    } catch { /* ignore style overrides for debug sketch faces */ }
+}
+
+function buildDebugSketchGroupFromSectionSolid(sectionSolid) {
+    if (!sectionSolid || typeof sectionSolid.visualize !== "function") return null;
+    try { sectionSolid.visualize({ showEdges: true, authoringOnly: true }); } catch { return null; }
+
+    const faceNames = (typeof sectionSolid.getFaceNames === "function") ? sectionSolid.getFaceNames() : [];
+    if (!Array.isArray(faceNames) || faceNames.length !== 1) return null;
+    const sourceFaceName = String(faceNames[0] || "");
+    if (!sourceFaceName) return null;
+
+    let faceMetadata = null;
+    try {
+        faceMetadata = (typeof sectionSolid.getFaceMetadata === "function")
+            ? (sectionSolid.getFaceMetadata(sourceFaceName) || null)
+            : null;
+    } catch {
+        faceMetadata = null;
+    }
+    if (!faceMetadata || faceMetadata.debugSketchFace !== true) return null;
+
+    const children = Array.isArray(sectionSolid.children) ? [...sectionSolid.children] : [];
+    const profileFace = children.find((child) => child?.type === "FACE" && String(child?.name || "") === sourceFaceName);
+    if (!profileFace) return null;
+
+    const group = new BREP.THREE.Group();
+    group.name = sectionSolid.name || sourceFaceName;
+    group.type = "SKETCH";
+    group.onClick = () => {};
+    group.userData = group.userData || {};
+
+    const profileFaceName = `${group.name}:PROFILE`;
+    profileFace.name = profileFaceName;
+    profileFace.parentSolid = null;
+    profileFace.userData = {
+        ...(profileFace.userData || {}),
+        faceName: profileFaceName,
+        sketchFeatureId: group.name,
+        sourceFaceName,
+    };
+    applySketchProfileFaceStyle(profileFace);
+    const basis = buildSketchBasisFromFace(profileFace);
+    if (basis) group.userData.sketchBasis = basis;
+
+    const childEdges = [];
+    const childVertices = [];
+    for (const child of children) {
+        if (!child) continue;
+        if (child.type === "EDGE") {
+            child.parentSolid = null;
+            child.userData = child.userData || {};
+            if (child.userData.faceA === sourceFaceName) child.userData.faceA = profileFaceName;
+            if (child.userData.faceB === sourceFaceName) child.userData.faceB = profileFaceName;
+            child.userData.sketchFeatureId = group.name;
+            childEdges.push(child);
+        } else if (child.type === "VERTEX") {
+            child.parentSolid = null;
+            child.userData = child.userData || {};
+            child.userData.sketchFeatureId = group.name;
+            childVertices.push(child);
+        }
+    }
+    profileFace.edges = childEdges;
+    for (const edge of childEdges) {
+        if (Array.isArray(edge.faces)) {
+            edge.faces = edge.faces.map((face) => (face === profileFace || String(face?.name || "") === sourceFaceName) ? profileFace : face)
+                .filter(Boolean);
+        } else {
+            edge.faces = [profileFace];
+        }
+    }
+
+    group.add(profileFace);
+    for (const edge of childEdges) group.add(edge);
+    for (const vertex of childVertices) group.add(vertex);
+    return group;
+}
 
 export class ChamferFeature {
     static shortName = "CH";
@@ -89,12 +241,13 @@ export class ChamferFeature {
         }
 
         const fid = this.inputParams.featureID;
+        const debugMode = normalizeChamferDebugMode(this.inputParams.debug);
         const result = await targetSolid.chamfer({
             distance,
             edges: edgeObjs,
             direction,
             inflate: Number(this.inputParams.inflate),
-            debug: !!this.inputParams.debug,
+            debug: debugMode !== "None",
             featureID: fid,
         });
 
@@ -116,10 +269,17 @@ export class ChamferFeature {
         result.visualize();
 
         const added = [result];
-        if (this.inputParams.debug && Array.isArray(result.__debugChamferSolids)) {
+        if (debugMode !== "None" && Array.isArray(result.__debugChamferSolids)) {
             for (const dbg of result.__debugChamferSolids) {
                 if (!dbg) continue;
+                if (!shouldIncludeChamferDebugSolid(debugMode, dbg)) continue;
                 try { dbg.name = `${fid || "CHAMFER"}_${dbg.name || "DEBUG"}`; } catch {}
+                const debugSketch = buildDebugSketchGroupFromSectionSolid(dbg);
+                if (debugSketch) {
+                    added.push(debugSketch);
+                    continue;
+                }
+                try { dbg.visualize({ showEdges: true, authoringOnly: true }); } catch {}
                 added.push(dbg);
             }
         }

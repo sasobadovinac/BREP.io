@@ -10,6 +10,7 @@ const distDir = path.join(sourceDir, "dist");
 const emsdkDir = process.env.EMSDK || path.join(os.homedir(), "emsdk");
 const emsdkEnvScript = path.join(emsdkDir, "emsdk_env.sh");
 const emsdkVersion = "3.1.64";
+const emCacheDir = path.join(rootDir, ".emscripten_cache");
 const isWindows = process.platform === "win32";
 const cmakeVenvDir = path.join(os.homedir(), ".cache", "brep-tools", "cmake-venv");
 const cmakeBinDir = isWindows
@@ -60,9 +61,10 @@ const runWithEmscripten = (commandText) => {
   }
 
   const quoted = commandText.replaceAll('"', '\\"');
+  const quotedCache = emCacheDir.replaceAll('"', '\\"');
   run("bash", [
     "-lc",
-    `cd "${emsdkDir}" && ./emsdk install ${emsdkVersion} >/dev/null && ./emsdk activate ${emsdkVersion} >/dev/null && source "${emsdkEnvScript}" >/dev/null && cd "${rootDir}" && ${quoted}`,
+    `cd "${emsdkDir}" && ./emsdk install ${emsdkVersion} >/dev/null && source "${emsdkEnvScript}" >/dev/null && export EM_CACHE="${quotedCache}" && mkdir -p "${quotedCache}" && cd "${rootDir}" && ${quoted}`,
   ]);
 };
 
@@ -146,6 +148,7 @@ try {
 
   ensureCmakeAvailable();
   mkdirSync(buildDir, { recursive: true });
+  mkdirSync(emCacheDir, { recursive: true });
 
   runEmscriptenCommand("emcmake", [
     "cmake",

@@ -51,6 +51,14 @@ export const CADmaterials = {
             // Depth-test against faces but don't write depth (avoid occluding faces).
             depthWrite: false,
         }),
+        SECTION: new LineMaterial({
+            color: "#009dff",
+            linewidth: 3,
+            transparent: false,
+            dashed: false,
+            worldUnits: false,
+            depthWrite: false,
+        }),
         SELECTED: new LineMaterial({
             color: "#ff00ff",
             linewidth: 3,

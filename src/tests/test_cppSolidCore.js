@@ -129,7 +129,7 @@ export async function test_cppSolidCore_setAuthoringState_and_bakeTransform() {
     }
 }
 
-export async function test_cppSolidCore_weldVerticesByEpsilon_compacts_authoring_buffers() {
+export async function test_cppSolidCore_weldVerticesByEpsilon_aligns_authoring_points_without_compacting_buffers() {
     if (manifoldBuildSource !== "local") {
         return;
     }
@@ -155,14 +155,79 @@ export async function test_cppSolidCore_weldVerticesByEpsilon_compacts_authoring
         core.weldVerticesByEpsilon(1e-5);
         const snapshot = core.getAuthoringState();
 
-        if (snapshot.vertexCount !== 3) {
-            throw new Error(`Expected 3 welded vertices, received ${snapshot.vertexCount}.`);
+        if (snapshot.vertexCount !== 4) {
+            throw new Error(`Expected authored vertex count to stay 4 after weldVerticesByEpsilon, received ${snapshot.vertexCount}.`);
         }
         if (snapshot.triangleCount !== 2) {
-            throw new Error(`Expected 2 triangles after weld, received ${snapshot.triangleCount}.`);
+            throw new Error(`Expected authored triangle count to stay 2 after weldVerticesByEpsilon, received ${snapshot.triangleCount}.`);
+        }
+
+        const x1 = snapshot.vertProperties[3];
+        const x3 = snapshot.vertProperties[9];
+        if (Math.abs(x1 - 1.00000005) > 1e-6 || Math.abs(x3 - 1.00000005) > 1e-6) {
+            throw new Error(`Expected welded vertices to share the averaged x position, received x1=${x1}, x3=${x3}.`);
         }
         if (snapshot.faceNameToID.get("FACE_A") !== 7 || snapshot.idToFaceName.get(7) !== "FACE_A") {
             throw new Error("Face mappings were not preserved across weldVerticesByEpsilon.");
+        }
+    } finally {
+        core.dispose();
+    }
+}
+
+export async function test_cppSolidCore_weldVerticesByEpsilon_aligns_neighboring_cells_by_true_distance() {
+    if (manifoldBuildSource !== "local") {
+        return;
+    }
+
+    const core = new CppSolidCore();
+    try {
+        core.setAuthoringState({
+            numProp: 3,
+            vertProperties: [
+                0, 0, 0,
+                1, 0, 0,
+                0, 1, 0,
+                0, 0, 0.99995,
+                0, 0, 1.00004,
+            ],
+            triVerts: [
+                0, 2, 1,
+                0, 1, 3,
+                0, 4, 2,
+                1, 2, 3,
+            ],
+            triIDs: [11, 12, 13, 14],
+            faceNameToID: [
+                ["F1", 11],
+                ["F2", 12],
+                ["F3", 13],
+                ["F4", 14],
+            ],
+            idToFaceName: [
+                [11, "F1"],
+                [12, "F2"],
+                [13, "F3"],
+                [14, "F4"],
+            ],
+            faceMetadataJson: [],
+            edgeMetadataJson: [],
+        });
+
+        core.weldVerticesByEpsilon(1e-4);
+        const snapshot = core.getAuthoringState();
+
+        if (snapshot.vertexCount !== 5) {
+            throw new Error(`Expected authored vertex count to stay 5 after neighboring-cell weld, received ${snapshot.vertexCount}.`);
+        }
+        if (snapshot.triangleCount !== 4) {
+            throw new Error(`Expected the tetra shell to remain intact after weldVerticesByEpsilon, received ${snapshot.triangleCount} triangles.`);
+        }
+
+        const apexZ = snapshot.vertProperties[11];
+        const apexZ2 = snapshot.vertProperties[14];
+        if (Math.abs(apexZ - 0.999995) > 1e-6 || Math.abs(apexZ2 - 0.999995) > 1e-6) {
+            throw new Error(`Expected neighboring-cell vertices to share z=0.999995 after cluster averaging, received z1=${apexZ}, z2=${apexZ2}.`);
         }
     } finally {
         core.dispose();

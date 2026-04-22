@@ -13,6 +13,7 @@ import { manifold } from "../setupManifold.js";
  */
 
 const BOOLEAN_DISCONNECTED_ISLAND_MIN_VOLUME = 0.01;
+const BOOLEAN_RESULT_WELD_EPSILON = 0.0015;
 
 function hasNativeBooleanCombinedBuilder() {
     return typeof manifold?.buildBooleanCombinedAuthoringState === "function";
@@ -188,9 +189,17 @@ function _dropDisconnectedIslandsByVolume(solid, minVolume = BOOLEAN_DISCONNECTE
     return removed;
 }
 
+function _applyFixedBooleanResultWeld(solid) {
+    const epsilon = Number(BOOLEAN_RESULT_WELD_EPSILON);
+    if (!solid || typeof solid.setEpsilon !== "function") return solid;
+    if (!Number.isFinite(epsilon) || epsilon <= 0) return solid;
+    solid.setEpsilon(epsilon);
+    return solid;
+}
+
 function _cleanupBooleanResult(solid) {
     try { _dropDisconnectedIslandsByVolume(solid, BOOLEAN_DISCONNECTED_ISLAND_MIN_VOLUME); } catch { }
-    return solid;
+    return _applyFixedBooleanResultWeld(solid);
 }
 
 export function union(other) {
