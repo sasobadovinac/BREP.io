@@ -224,7 +224,7 @@ export class SimulationWorkbenchManager {
       this._captureSourceVisibility();
       this._hydrateRuntimeStateFromMetadata();
       this._applyRuntimeTransforms();
-      this._setSourceSolidsVisible(false);
+      this._setSourceSolidsVisible(true);
       void this._prepareSimulationAssets();
       this._ensurePhysicsLoop();
       return;
@@ -437,7 +437,7 @@ export class SimulationWorkbenchManager {
     group.name = `${SIM_PROXY_PREFIX}:${solid.name || solid.uuid || ''}`;
     group.userData.excludeFromFit = false;
     group.userData.simulationProxy = true;
-    group.visible = this._active;
+    group.visible = false;
     const metadataColor = this.viewer?.partHistory?.metadataManager?.getMetadata?.(solid.name || '')?.color || null;
     hulls.forEach((hull, index) => {
       const geometry = new THREE.BufferGeometry();
@@ -468,7 +468,7 @@ export class SimulationWorkbenchManager {
     group.position.copy(solid.position);
     group.quaternion.copy(solid.quaternion);
     group.scale.copy(solid.scale);
-    group.visible = this._active;
+    group.visible = false;
     group.updateMatrixWorld?.(true);
   }
 
@@ -489,7 +489,7 @@ export class SimulationWorkbenchManager {
       }
     }
     for (const group of this._proxyGroups.values()) {
-      group.visible = !visible;
+      group.visible = false;
     }
     try { this.viewer?.render?.(); } catch {}
   }
