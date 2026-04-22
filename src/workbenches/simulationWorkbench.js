@@ -33,7 +33,7 @@ export const SIMULATION_WORKBENCH = {
     'HEIGHTMAP',
   ],
   contextFamilies: {
-    features: true,
+    features: false,
     assemblyConstraints: false,
     pmiAnnotations: false,
   },

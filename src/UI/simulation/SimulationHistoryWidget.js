@@ -90,6 +90,7 @@ export class SimulationHistoryWidget {
       this._renderTransport();
     });
     this.transportEl.appendChild(resetBtn);
+
   }
 
   _ensureStyles() {

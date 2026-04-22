@@ -705,6 +705,8 @@ export class Viewer {
         this._clearColor = new THREE.Color(clearColor);
         this._clearAlpha = clearAlpha;
         this._rendererMode = 'webgl';
+        this._simulationFinishUi = null;
+        this._simulationFinishReserveKey = 'simulation-workbench-finish';
         this._svgRenderer = null;
         this._webglRenderer = null;
         this._webglComposer = null;
@@ -1903,6 +1905,13 @@ export class Viewer {
         this.historyWidget = await new HistoryWidget(this);
         const historySection = await this.accordion.addSection("History");
         await historySection.uiElement.appendChild(await this.historyWidget.uiElement);
+        this._registerWorkbenchPanel({
+            id: 'featureHistory',
+            title: 'History',
+            section: historySection,
+            source: 'builtin',
+            workbenches: ['MODELING', 'IMPORT', 'SURFACING', 'SHEET_METAL', 'ASSEMBLIES', 'WIRE_HARNESS', 'PMI', 'ALL'],
+        });
 
         this.assemblyConstraintsWidget = new AssemblyConstraintsWidget(this);
         this._assemblyConstraintsSection = await this.accordion.addSection(ASSEMBLY_CONSTRAINTS_TITLE);
@@ -2056,6 +2065,11 @@ export class Viewer {
         const previous = this._getActiveWorkbenchId();
         const next = setPartActiveWorkbench(this.partHistory, normalizeWorkbenchId(workbenchId, previous));
         if (previous === next) return false;
+        if (next === 'SIMULATION' && previous !== 'SIMULATION') {
+            this._simulationWorkbenchReturnTarget = previous || 'MODELING';
+        } else if (previous === 'SIMULATION' && next !== 'SIMULATION') {
+            this._simulationWorkbenchReturnTarget = null;
+        }
         if (next === 'SIMULATION') {
             try { SelectionFilter.SetSelectionTypes([SelectionFilter.SOLID]); } catch { }
         }
@@ -2081,6 +2095,85 @@ export class Viewer {
         this._workbenchReturnTarget = null;
         if (!target) return false;
         return this.setActiveWorkbench(target, { queueHistorySnapshot: true });
+    }
+
+    finishSimulationWorkbench() {
+        const target = this._simulationWorkbenchReturnTarget || 'MODELING';
+        this._simulationWorkbenchReturnTarget = null;
+        try { this.simulationWorkbenchManager?.setPlaying?.(false); } catch { }
+        return this.setActiveWorkbench(target, { queueHistorySnapshot: true });
+    }
+
+    _syncSimulationFinishUi() {
+        const active = this._getActiveWorkbenchId() === 'SIMULATION';
+        if (active) return this._mountSimulationFinishUi();
+        return this._removeSimulationFinishUi();
+    }
+
+    _mountSimulationFinishUi() {
+        if (this._simulationFinishUi?.isConnected) return this._simulationFinishUi;
+        const host = this.container || document.body || null;
+        if (!host) return null;
+        if (!document.getElementById('simulation-finish-ui-styles')) {
+            const style = document.createElement('style');
+            style.id = 'simulation-finish-ui-styles';
+            style.textContent = `
+                .simulation-top-right {
+                    position: absolute;
+                    top: 8px;
+                    right: 8px;
+                    display: flex;
+                    gap: 8px;
+                    z-index: 1000;
+                }
+                .simulation-top-right-btn {
+                    appearance: none;
+                    border: 1px solid #262b36;
+                    border-radius: 8px;
+                    padding: 6px 10px;
+                    cursor: pointer;
+                    color: #e6e6e6;
+                    background: linear-gradient(180deg, rgba(110,168,254,.25), rgba(110,168,254,.15));
+                }
+            `;
+            document.head.appendChild(style);
+        }
+        try {
+            const pos = (typeof window !== 'undefined' && window.getComputedStyle)
+                ? window.getComputedStyle(host).position
+                : host.style.position;
+            if (!pos || pos === 'static') host.style.position = 'relative';
+        } catch {
+            if (!host.style.position) host.style.position = 'relative';
+        }
+        const wrap = document.createElement('div');
+        wrap.className = 'simulation-top-right';
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'simulation-top-right-btn';
+        btn.textContent = 'Finish';
+        btn.title = 'Finish simulation';
+        btn.addEventListener('click', () => {
+            try { this.finishSimulationWorkbench(); } catch { }
+        });
+        wrap.appendChild(btn);
+        host.appendChild(wrap);
+        this._simulationFinishUi = wrap;
+        try {
+            this.mainToolbar?.reserveRightSpaceForElement?.(
+                this._simulationFinishReserveKey,
+                wrap,
+                { extraPx: 16, minPx: 84 },
+            );
+        } catch { }
+        return wrap;
+    }
+
+    _removeSimulationFinishUi() {
+        try { this._simulationFinishUi?.remove?.(); } catch { }
+        this._simulationFinishUi = null;
+        try { this.mainToolbar?.clearRightReserve?.(this._simulationFinishReserveKey); } catch { }
+        return null;
     }
 
     async _ensureSimulationWorkbenchManager() {
@@ -2121,6 +2214,7 @@ export class Viewer {
         try { SelectionFilter.refreshSelectionActions?.(); } catch { }
         try { this._refreshWorkbenchPanelVisibility(); } catch { }
         try { this.mainToolbar?.refreshButtons?.(); } catch { }
+        try { this._syncSimulationFinishUi(); } catch { }
     }
 
     _normalizeToolbarButtonInput(labelOrSpec, title, onClick, fallbackSource = 'plugin') {

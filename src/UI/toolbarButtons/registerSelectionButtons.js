@@ -12,6 +12,8 @@ import {
 } from '../../utils/selectionOwningFeature.js';
 
 const hasSelection = (items) => Array.isArray(items) && items.length > 0;
+const isSimulationWorkbench = (viewer) => viewer?._getActiveWorkbenchId?.() === 'SIMULATION';
+const isNonSimulationWorkbench = (viewer) => !isSimulationWorkbench(viewer);
 const hasType = (items, types) => {
   if (!Array.isArray(items) || items.length === 0) return false;
   const typeSet = new Set((types || []).map((t) => String(t || '').toUpperCase()));
@@ -186,7 +188,7 @@ export function registerSelectionToolbarButtons(viewer) {
           viewer._activateComponentTransform(component);
         }
       },
-      shouldShow: (selection) => !!getSingleSelectionComponent(selection, viewer),
+      shouldShow: (selection) => isNonSimulationWorkbench(viewer) && !!getSingleSelectionComponent(selection, viewer),
     });
   } catch { }
 
@@ -196,7 +198,7 @@ export function registerSelectionToolbarButtons(viewer) {
       SelectionFilter.registerSelectionAction({
         id: 'selection-action-perp',
         ...perpSpec,
-        shouldShow: (selection) => hasType(selection, ['FACE', 'PLANE']),
+        shouldShow: (selection) => isNonSimulationWorkbench(viewer) && hasType(selection, ['FACE', 'PLANE']),
       });
     }
   } catch { }
@@ -232,8 +234,11 @@ export function registerSelectionToolbarButtons(viewer) {
         id: 'selection-action-edit-owning-feature',
         ...editOwningFeatureSpec,
         shouldShow: (selection) => (
+          isNonSimulationWorkbench(viewer)
+          && (
           isSingleSelectionOfTypes(selection, ['FACE', 'PLANE'])
           && !!resolveOwningFeatureIdForSelection(selection)
+          )
         ),
       });
     }
@@ -256,7 +261,7 @@ export function registerSelectionToolbarButtons(viewer) {
           viewer?._toast?.(`Feature "${entry.featureId}" is not available in history.`);
         }
       },
-      shouldShow: (selection) => !!getSketchLikeFeatureEntry(selection, viewer),
+      shouldShow: (selection) => isNonSimulationWorkbench(viewer) && !!getSketchLikeFeatureEntry(selection, viewer),
     });
   } catch { }
 
@@ -282,7 +287,7 @@ export function registerSelectionToolbarButtons(viewer) {
           viewer?._toast?.(`Unable to delete spline "${entry.featureId}".`);
         }
       },
-      shouldShow: (selection) => !!getSplineFeatureEntry(selection, viewer),
+      shouldShow: (selection) => isNonSimulationWorkbench(viewer) && !!getSplineFeatureEntry(selection, viewer),
     });
   } catch { }
 }
