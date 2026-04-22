@@ -213,14 +213,22 @@ export class SimulationWorkbenchManager {
     if (next === this._isPlaying) return this._isPlaying;
     this._isPlaying = next;
     if (this._active) {
-      void this._rebuildPhysicsWorld();
+      if (next) {
+        void this._prepareSimulationAssets().then(() => {
+          this._ensurePhysicsLoop();
+        });
+      } else {
+        this._stopPhysicsLoop();
+      }
     }
     this._emit();
+    try { this.viewer?.render?.(); } catch {}
     return this._isPlaying;
   }
 
   resetSimulationState() {
     this._stopTransformSession();
+    this._stopPhysicsLoop();
     this._destroyPhysicsWorld();
     this._isPlaying = false;
     this._movedSolidIds.clear();
@@ -235,7 +243,6 @@ export class SimulationWorkbenchManager {
     }
     if (this._active) {
       this._resetMotionRuntime();
-      void this._rebuildPhysicsWorld();
     }
     this._emit();
     try { this.viewer?.render?.(); } catch {}
@@ -255,7 +262,7 @@ export class SimulationWorkbenchManager {
     if (fixed) data[FIXED_METADATA_KEY] = true;
     else delete data[FIXED_METADATA_KEY];
     manager.setMetadataObject(solid.name, data);
-    if (this._active) {
+    if (this._active && this._physicsWorld) {
       void this._rebuildPhysicsWorld();
     }
     return true;
@@ -291,14 +298,16 @@ export class SimulationWorkbenchManager {
     }
     this._active = next;
     if (this._active) {
+      this._isPlaying = false;
+      this._stopPhysicsLoop();
+      this._destroyPhysicsWorld();
       this._captureBaseLocalPoses();
       this._captureSourceVisibility();
       this._hydrateRuntimeStateFromMetadata();
       this._resetMotionRuntime();
       this._applyRuntimeTransforms();
       this._setSourceSolidsVisible(true);
-      void this._prepareSimulationAssets();
-      this._ensurePhysicsLoop();
+      void this._prepareVisualAssets();
       this._emit();
       return;
     }
@@ -420,6 +429,16 @@ export class SimulationWorkbenchManager {
       await this._rebuildPhysicsWorld();
     } catch (error) {
       console.warn('[SimulationWorkbench] Failed to prepare simulation assets:', error);
+    }
+  }
+
+  async _prepareVisualAssets() {
+    if (!this._active) return;
+    try {
+      await Promise.all(this._listSceneSolids().map((solid) => this._ensureDecomposition(solid)));
+      this._buildProxyGroups();
+    } catch (error) {
+      console.warn('[SimulationWorkbench] Failed to prepare simulation visuals:', error);
     }
   }
 
@@ -652,6 +671,10 @@ export class SimulationWorkbenchManager {
   _stepPhysics(timestamp) {
     const world = this._physicsWorld;
     if (!world) return;
+    if (!this._isPlaying) {
+      this._lastStepTime = timestamp;
+      return;
+    }
     const dt = this._lastStepTime > 0
       ? Math.min(1 / 20, Math.max(1 / 240, (timestamp - this._lastStepTime) / 1000))
       : 1 / 60;
@@ -763,7 +786,9 @@ export class SimulationWorkbenchManager {
       this._setSolidWorldPose(solid, solidWorldPosition, targetWorldQuaternion);
       this._updateRuntimeTransformFromSolid(solid, { persist });
       if (persist) {
-        void this._rebuildPhysicsWorld();
+        if (this._physicsWorld) {
+          void this._rebuildPhysicsWorld();
+        }
       }
       try { this.viewer?.render?.(); } catch {}
     };
@@ -799,7 +824,9 @@ export class SimulationWorkbenchManager {
       globalState,
       mode: 'translate',
     };
-    void this._rebuildPhysicsWorld();
+    if (this._physicsWorld) {
+      void this._rebuildPhysicsWorld();
+    }
     updateForCamera();
     applyToSolid(false);
   }
@@ -822,7 +849,9 @@ export class SimulationWorkbenchManager {
     } catch {}
     this._transformSession = null;
     try { if (this.viewer?.controls) this.viewer.controls.enabled = true; } catch {}
-    void this._rebuildPhysicsWorld();
+    if (this._physicsWorld) {
+      void this._rebuildPhysicsWorld();
+    }
     try { this.viewer?.render?.(); } catch {}
   }
 
@@ -841,7 +870,7 @@ export class SimulationWorkbenchManager {
     if (!manager?.addListener) return;
     this._removeStateManagerListener = manager.addListener(() => {
       this._reconcileMotionState();
-      if (this._active) {
+      if (this._active && this._physicsWorld) {
         void this._rebuildPhysicsWorld();
       }
       this._emit();
@@ -861,8 +890,9 @@ export class SimulationWorkbenchManager {
   }
 
   _getMotionEntries() {
-    return Array.isArray(this.viewer?.partHistory?.simulationStateManager?.getMotions?.())
-      ? this.viewer.partHistory.simulationStateManager.getMotions()
+    const motions = this.viewer?.partHistory?.simulationStateManager?.getMotions?.();
+    return Array.isArray(motions)
+      ? motions.map((entry) => (entry?.inputParams && typeof entry.inputParams === 'object') ? entry.inputParams : entry).filter(Boolean)
       : [];
   }
 
@@ -890,7 +920,7 @@ export class SimulationWorkbenchManager {
     if (!solid || !this._isPlaying) return false;
     const name = normalizeText(solid.name, '');
     if (!name) return false;
-    return this._getMotionEntries().some((motion) => normalizeText(motion?.solidName, '') === name);
+    return this._getMotionEntries().some((motion) => normalizeText(this._resolveReferenceName(motion?.solid), '') === name);
   }
 
   _applyMotionStep(dt) {
@@ -905,25 +935,32 @@ export class SimulationWorkbenchManager {
   }
 
   _resolveMotionSolid(motion) {
-    const name = normalizeText(motion?.solidName, '');
+    const name = normalizeText(this._resolveReferenceName(motion?.solid), '');
     if (!name) return null;
     const object = this.viewer?.partHistory?.getObjectByName?.(name) || null;
     return object?.type === 'SOLID' ? object : null;
   }
 
   _resolveMotionAxis(motion) {
-    const axisRef = motion?.axisRef && typeof motion.axisRef === 'object' ? motion.axisRef : null;
-    if (!axisRef) return null;
-    const objectName = normalizeText(axisRef.objectName, '');
+    const objectName = normalizeText(this._resolveReferenceName(motion?.axis), '');
     const object = objectName ? this.viewer?.partHistory?.getObjectByName?.(objectName) : null;
-    const live = object ? this._extractAxisPointsFromObject(object) : null;
-    const start = live?.start || axisRef.axisStart;
-    const end = live?.end || axisRef.axisEnd;
-    if (!Array.isArray(start) || !Array.isArray(end) || start.length < 3 || end.length < 3) return null;
-    const startVec = new THREE.Vector3(Number(start[0]) || 0, Number(start[1]) || 0, Number(start[2]) || 0);
-    const endVec = new THREE.Vector3(Number(end[0]) || 0, Number(end[1]) || 0, Number(end[2]) || 0);
+    if (!object) return null;
+    const live = this._extractAxisPointsFromObject(object);
+    if (!live?.start || !live?.end) return null;
+    const startVec = new THREE.Vector3(Number(live.start[0]) || 0, Number(live.start[1]) || 0, Number(live.start[2]) || 0);
+    const endVec = new THREE.Vector3(Number(live.end[0]) || 0, Number(live.end[1]) || 0, Number(live.end[2]) || 0);
     if (startVec.distanceToSquared(endVec) <= 1e-12) return null;
     return { start: startVec, end: endVec };
+  }
+
+  _resolveReferenceName(value) {
+    if (Array.isArray(value)) {
+      return this._resolveReferenceName(value[0] || null);
+    }
+    if (value && typeof value === 'object') {
+      return normalizeText(value.name || value.objectName || value.label || '', '');
+    }
+    return normalizeText(value, '');
   }
 
   _extractAxisPointsFromObject(object) {

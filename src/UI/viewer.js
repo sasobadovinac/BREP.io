@@ -2056,6 +2056,9 @@ export class Viewer {
         const previous = this._getActiveWorkbenchId();
         const next = setPartActiveWorkbench(this.partHistory, normalizeWorkbenchId(workbenchId, previous));
         if (previous === next) return false;
+        if (next === 'SIMULATION') {
+            try { SelectionFilter.SetSelectionTypes([SelectionFilter.SOLID]); } catch { }
+        }
         if (next !== 'PMI') {
             this._workbenchReturnTarget = null;
         }

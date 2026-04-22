@@ -1,130 +1,101 @@
+import { HistoryCollectionBase } from '../core/entities/HistoryCollectionBase.js';
 import { deepClone } from '../utils/deepClone.js';
+import { LinearMotionEntity } from './LinearMotionEntity.js';
+import { RotationMotionEntity } from './RotationMotionEntity.js';
 
-function normalizeText(value, fallback = '') {
-  const next = String(value == null ? '' : value).trim();
-  return next || fallback;
-}
+const DEFAULT_TYPE = 'rotation';
+const RESERVED_INPUT_KEYS = new Set(['type', 'persistentData', '__open']);
 
-function toFiniteNumber(value, fallback = 0) {
-  const next = Number(value);
-  return Number.isFinite(next) ? next : fallback;
-}
-
-function normalizeAxisRef(raw) {
-  const source = raw && typeof raw === 'object' ? raw : {};
-  const normalizeVec3 = (value, fallback = [0, 0, 0]) => {
-    if (!Array.isArray(value) || value.length < 3) return fallback.slice();
-    return [
-      toFiniteNumber(value[0], fallback[0]),
-      toFiniteNumber(value[1], fallback[1]),
-      toFiniteNumber(value[2], fallback[2]),
-    ];
-  };
-  return {
-    objectName: normalizeText(source.objectName, ''),
-    anchorSolidName: normalizeText(source.anchorSolidName, ''),
-    label: normalizeText(source.label, ''),
-    axisStart: normalizeVec3(source.axisStart),
-    axisEnd: normalizeVec3(source.axisEnd, [1, 0, 0]),
-  };
-}
-
-function normalizeMotion(raw, index = 0) {
-  const source = raw && typeof raw === 'object' ? raw : {};
-  const type = normalizeText(source.type, 'rotation').toLowerCase() === 'linear' ? 'linear' : 'rotation';
-  const defaultName = type === 'linear' ? `Linear Motion ${index + 1}` : `Rotation Motion ${index + 1}`;
-  const limitKey = type === 'linear' ? 'distance' : 'angle';
-  const rawLimit = source[limitKey];
-  const finiteLimit = Number.isFinite(Number(rawLimit)) ? Number(rawLimit) : null;
-  return {
-    id: normalizeText(source.id, `simulation-motion-${index + 1}`),
-    type,
-    name: normalizeText(source.name, defaultName),
-    solidName: normalizeText(source.solidName, ''),
-    axisRef: normalizeAxisRef(source.axisRef),
-    speed: toFiniteNumber(source.speed, type === 'linear' ? 10 : 90),
-    [limitKey]: finiteLimit,
-  };
-}
-
-export class SimulationStateManager {
+export class SimulationStateManager extends HistoryCollectionBase {
   constructor(partHistory) {
+    super({ viewer: null });
     this.partHistory = partHistory || null;
-    this.motions = [];
-    this._listeners = new Set();
-  }
-
-  reset() {
-    this.motions = [];
-    this._emit();
+    this._registerAvailableEntries();
   }
 
   getMotions() {
-    this._normalizeMotionsArray(this.motions);
-    return this.motions;
+    return this.entries;
   }
 
-  addMotion(type = 'rotation', motion = {}) {
-    const list = this.getMotions();
-    const nextType = String(type || motion?.type || 'rotation').toLowerCase() === 'linear' ? 'linear' : 'rotation';
-    const normalized = normalizeMotion({
-      id: motion?.id || this._generateMotionId(nextType),
-      type: nextType,
-      ...motion,
-    }, list.length);
-    list.push(normalized);
-    this._emit();
-    return normalized;
+  createMotion(type = DEFAULT_TYPE, initialData = null) {
+    const EntityClass = this._resolveHandler(type);
+    if (!EntityClass) return null;
+    const entity = new EntityClass({ history: this, registry: this.registry });
+    entity.type = EntityClass.entityType || EntityClass.type || DEFAULT_TYPE;
+    entity.entityType = entity.type;
+    const defaults = this._defaultsFromSchema(EntityClass);
+    const seed = deepClone(initialData || {});
+    entity.setParams({ ...defaults, ...seed, type: entity.type });
+    entity.setPersistentData(seed.persistentData || {});
+    delete entity.inputParams.persistentData;
+    const id = entity.inputParams.id || this.generateId(entity.shortName || entity.type || 'SIM');
+    entity.setId(id);
+    entity.runtimeAttributes.__open = true;
+    this._linkInputParams(entity);
+    this.entries.push(entity);
+    this._bumpIdCounterFrom(entity);
+    this.notifyListeners({ reason: 'add', entry: entity, history: this });
+    return entity;
   }
 
-  updateMotion(motionId, updater) {
-    const list = this.getMotions();
-    const id = normalizeText(motionId, '');
-    const index = list.findIndex((entry) => String(entry?.id || '') === id);
-    if (index < 0) return null;
-    const current = list[index];
-    let next = current;
-    if (typeof updater === 'function') {
-      try {
-        const result = updater(deepClone(current));
-        if (result && typeof result === 'object') next = result;
-      } catch {
-        next = current;
-      }
-    } else if (updater && typeof updater === 'object') {
-      next = { ...current, ...updater };
+  loadSerializable(rawState) {
+    this.entries = [];
+    this._idCounter = 0;
+    const state = (rawState && typeof rawState === 'object' && !Array.isArray(rawState))
+      ? rawState
+      : { motions: rawState };
+    const list = Array.isArray(state.motions) ? state.motions : [];
+    for (const raw of list) {
+      const entity = this._hydrateEntity(raw);
+      if (!entity) continue;
+      this.entries.push(entity);
+      this._bumpIdCounterFrom(entity);
+      this._linkInputParams(entity);
     }
-    list[index] = normalizeMotion(next, index);
-    if (!list[index].id) list[index].id = current.id;
-    this._emit();
-    return list[index];
-  }
-
-  removeMotion(motionId) {
-    const list = this.getMotions();
-    const id = normalizeText(motionId, '');
-    const index = list.findIndex((entry) => String(entry?.id || '') === id);
-    if (index < 0) return null;
-    const [removed] = list.splice(index, 1);
-    this._normalizeMotionsArray(list);
-    this._emit();
-    return removed || null;
+    this.notifyListeners({ reason: 'load', history: this });
+    return this.entries;
   }
 
   toSerializable() {
     return {
-      motions: this.getMotions().map((entry) => deepClone(entry)),
+      motions: this.entries.map((entity) => {
+        const open = Boolean(entity.runtimeAttributes?.__open);
+        const input = deepClone(entity.inputParams || {});
+        if (input && typeof input === 'object') {
+          delete input.persistentData;
+          delete input.__open;
+          delete input.__entityRef;
+        }
+        return {
+          type: entity.type || DEFAULT_TYPE,
+          inputParams: input,
+          persistentData: deepClone(entity.persistentData || {}),
+          __open: open || undefined,
+        };
+      }),
     };
   }
 
-  loadSerializable(rawState) {
-    const state = (rawState && typeof rawState === 'object' && !Array.isArray(rawState))
-      ? rawState
-      : { motions: rawState };
-    this.motions = Array.isArray(state.motions) ? Array.from(state.motions) : [];
-    this._normalizeMotionsArray(this.motions);
-    this._emit();
-    return this.toSerializable();
+  reset() {
+    this.entries = [];
+    this._idCounter = 0;
+    this.notifyListeners({ reason: 'clear', history: this });
+  }
+
+  generateId(typeHint = 'SIM') {
+    const prefix = String(typeHint || 'SIM').replace(/[^a-z0-9]/gi, '').toUpperCase() || 'SIM';
+    const existing = new Set(this.entries.map((entry, index) => {
+      const params = entry?.inputParams;
+      if (params?.id) return String(params.id);
+      if (entry?.id != null) return String(entry.id);
+      return `SIM${index + 1}`;
+    }));
+    let candidate = '';
+    do {
+      this._idCounter += 1;
+      candidate = `${prefix}${this._idCounter}`;
+    } while (existing.has(candidate));
+    return candidate;
   }
 
   addListener(listener) {
@@ -140,37 +111,116 @@ export class SimulationStateManager {
     try { this._listeners.delete(listener); } catch {}
   }
 
-  notifyChanged() {
-    this._emit();
-  }
-
-  _generateMotionId(type = 'rotation') {
-    const prefix = type === 'linear' ? 'linear-motion' : 'rotation-motion';
-    const ids = new Set(this.getMotions().map((entry) => String(entry?.id || '')));
-    let index = 1;
-    while (ids.has(`${prefix}-${index}`)) index += 1;
-    return `${prefix}-${index}`;
-  }
-
-  _normalizeMotionsArray(arrayRef) {
-    if (!Array.isArray(arrayRef)) {
-      this.motions = [];
-      return this.motions;
+  notifyListeners(payload = {}) {
+    if (!(this._listeners instanceof Set)) return;
+    for (const fn of Array.from(this._listeners)) {
+      try { fn(payload, this); } catch {}
     }
-    for (let index = 0; index < arrayRef.length; index += 1) {
-      arrayRef[index] = normalizeMotion(arrayRef[index], index);
-    }
-    return arrayRef;
   }
 
-  _emit() {
-    if (!this._listeners || this._listeners.size === 0) return;
-    const payload = {
-      motions: this.getMotions(),
-      manager: this,
-    };
-    for (const listener of Array.from(this._listeners)) {
-      try { listener(payload); } catch {}
+  _registerAvailableEntries() {
+    for (const Handler of [RotationMotionEntity, LinearMotionEntity]) {
+      try { this.registry.register(Handler); } catch {}
+    }
+  }
+
+  _resolveHandler(type) {
+    const normalized = String(type || '').trim().toLowerCase();
+    if (normalized === 'linear') return LinearMotionEntity;
+    return RotationMotionEntity;
+  }
+
+  _defaultsFromSchema(EntityClass) {
+    const out = {};
+    const schema = EntityClass?.inputParamsSchema;
+    if (!schema || typeof schema !== 'object') return out;
+    for (const key of Object.keys(schema)) {
+      if (RESERVED_INPUT_KEYS.has(key)) continue;
+      const def = schema[key];
+      if (!def || typeof def !== 'object') continue;
+      if (Object.prototype.hasOwnProperty.call(def, 'default_value')) {
+        out[key] = deepClone(def.default_value);
+      }
+    }
+    return out;
+  }
+
+  _hydrateEntity(raw) {
+    const source = raw && typeof raw === 'object' ? raw : {};
+    const EntityClass = this._resolveHandler(source.type || source.inputParams?.type || DEFAULT_TYPE);
+    if (!EntityClass) return null;
+    const entity = new EntityClass({ history: this, registry: this.registry });
+    entity.type = EntityClass.entityType || EntityClass.type || DEFAULT_TYPE;
+    entity.entityType = entity.type;
+    const params = this._cloneWithoutReserved(source.inputParams || source);
+    if (!params.type) params.type = entity.type;
+    entity.setParams(params);
+    entity.setPersistentData(deepClone(source.persistentData || {}));
+    delete entity.inputParams.persistentData;
+    const id = entity.inputParams.id || source.id || this.generateId(entity.shortName || entity.type);
+    entity.setId(id);
+    entity.runtimeAttributes.__open = Boolean(source.__open);
+    this._linkInputParams(entity);
+    return entity;
+  }
+
+  _cloneWithoutReserved(obj) {
+    const out = {};
+    if (!obj || typeof obj !== 'object') return out;
+    for (const key of Object.keys(obj)) {
+      if (RESERVED_INPUT_KEYS.has(key)) continue;
+      out[key] = deepClone(obj[key]);
+    }
+    return out;
+  }
+
+  _linkInputParams(entity) {
+    if (!entity) return;
+    if (!entity.runtimeAttributes || typeof entity.runtimeAttributes !== 'object') {
+      entity.runtimeAttributes = {};
+    }
+    const params = entity.inputParams || {};
+    const descriptor = { configurable: true, enumerable: false };
+
+    if (!Object.prototype.hasOwnProperty.call(params, '__entityRef')) {
+      Object.defineProperty(params, '__entityRef', { ...descriptor, value: entity });
+    }
+
+    if (!Object.prototype.hasOwnProperty.call(params, 'persistentData')) {
+      Object.defineProperty(params, 'persistentData', {
+        ...descriptor,
+        get: () => entity.persistentData,
+        set: (value) => {
+          const next = (value && typeof value === 'object') ? value : {};
+          entity.setPersistentData(next);
+        },
+      });
+    }
+
+    if (!Object.prototype.hasOwnProperty.call(params, '__open')) {
+      Object.defineProperty(params, '__open', {
+        ...descriptor,
+        get: () => Boolean(entity.runtimeAttributes.__open),
+        set: (value) => {
+          entity.runtimeAttributes.__open = Boolean(value);
+        },
+      });
+    }
+
+    params.type = entity.type || params.type || DEFAULT_TYPE;
+    if (params.id == null && entity.id != null) {
+      params.id = entity.id;
+    }
+  }
+
+  _bumpIdCounterFrom(entity) {
+    const id = entity?.inputParams?.id || entity?.id;
+    if (!id) return;
+    const match = String(id).match(/(\d+)$/);
+    if (!match) return;
+    const num = parseInt(match[1], 10);
+    if (Number.isFinite(num) && num > this._idCounter) {
+      this._idCounter = num;
     }
   }
 }
