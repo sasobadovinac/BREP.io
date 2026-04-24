@@ -42,6 +42,25 @@ function assertClosedManifold(solid, label) {
   }
 }
 
+function assertBoundaryPairs(solid, label, expectedPairs) {
+  const boundaries = typeof solid?.getBoundaryEdgePolylines === 'function'
+    ? (solid.getBoundaryEdgePolylines() || [])
+    : [];
+  const normalizePair = (faceA, faceB) => [String(faceA || ''), String(faceB || '')]
+    .sort((a, b) => a.localeCompare(b))
+    .join('|');
+  const actual = boundaries
+    .map((edge) => normalizePair(edge?.faceA, edge?.faceB))
+    .sort((a, b) => a.localeCompare(b));
+  const expected = expectedPairs
+    .map(([faceA, faceB]) => normalizePair(faceA, faceB))
+    .sort((a, b) => a.localeCompare(b));
+  assert(
+    JSON.stringify(actual) === JSON.stringify(expected),
+    `[${label}] Expected boundary pairs ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}.`,
+  );
+}
+
 function averageFaceTriangleRadiusXZ(solid, faceName, yBand = null) {
   const face = typeof solid?.getFace === 'function' ? solid.getFace(faceName) : null;
   assert(Array.isArray(face) && face.length > 0, `Expected face "${faceName}" to exist on solid "${solid?.name || ''}".`);
@@ -126,21 +145,62 @@ async function buildCylinderSideFace(partHistory, featureId, radius, height, res
   return face;
 }
 
+async function buildTorusSideFace(partHistory, featureId, majorRadius, tubeRadius, arcDegrees, resolution = 32) {
+  const torus = await partHistory.newFeature('P.T');
+  torus.inputParams.id = featureId;
+  torus.inputParams.majorRadius = majorRadius;
+  torus.inputParams.tubeRadius = tubeRadius;
+  torus.inputParams.arc = arcDegrees;
+  torus.inputParams.resolution = resolution;
+  await partHistory.runHistory();
+  const face = partHistory.getObjectByName(`${featureId}_Side`);
+  assert(face?.type === 'FACE', `Expected torus side face "${featureId}_Side".`);
+  return face;
+}
+
+async function buildFilletedCubeTopFace(partHistory, featureId) {
+  const cube = await partHistory.newFeature('P.CU');
+  cube.inputParams.id = featureId;
+  cube.inputParams.sizeX = 8;
+  cube.inputParams.sizeY = 6;
+  cube.inputParams.sizeZ = 4;
+
+  const fillet = await partHistory.newFeature('F');
+  fillet.inputParams.id = `${featureId}_FILLET`;
+  fillet.inputParams.edges = [`${featureId}_PZ`];
+  fillet.inputParams.radius = 0.75;
+  fillet.inputParams.direction = 'INSET';
+
+  await partHistory.runHistory();
+  const face = partHistory.getObjectByName(`${featureId}_PZ`);
+  assert(face?.type === 'FACE', `Expected filleted top face "${featureId}_PZ".`);
+  return face;
+}
+
 export async function test_face_thicken_planar_profile(partHistory) {
   const face = await buildSketchProfileFace(partHistory, 'THICK_PLANAR_SRC', makeRectSketch(0, 0, 10, 6));
   const solid = face.thicken(2, { featureId: 'THICK_PLANAR' });
   assertClosedManifold(solid, 'thicken-planar');
 
   const expectedFaceNames = new Set([
-    'THICK_PLANAR_SOURCE_THICK_PLANAR_SRC_PROFILE',
-    'THICK_PLANAR_OFFSET_THICK_PLANAR_SRC_PROFILE',
-    'THICK_PLANAR_RIM_L0_THICK_PLANAR_SRC_PROFILE',
+    'THICK_PLANAR_SRC:PROFILE_START',
+    'THICK_PLANAR_SRC:PROFILE_END',
+    'THICK_PLANAR_SRC:PROFILE_SW',
   ]);
   const actualFaceNames = new Set(typeof solid.getFaceNames === 'function' ? solid.getFaceNames() : []);
   for (const faceName of expectedFaceNames) {
     assert(actualFaceNames.has(faceName), `[thicken-planar] Missing face "${faceName}".`);
   }
+  assertBoundaryPairs(solid, 'thicken-planar', [
+    ['THICK_PLANAR_SRC:PROFILE_START', 'THICK_PLANAR_SRC:PROFILE_SW'],
+    ['THICK_PLANAR_SRC:PROFILE_END', 'THICK_PLANAR_SRC:PROFILE_SW'],
+  ]);
 
+  const diagnostics = solid?.__thickenDiagnostics || {};
+  assert(
+    String(diagnostics.classificationMethod || '').startsWith('propagated_face_ids'),
+    '[thicken-planar] Expected propagated face IDs.',
+  );
   const volume = typeof solid.volume === 'function' ? solid.volume() : NaN;
   assert(Math.abs(volume - 120) <= 1e-3, `[thicken-planar] Expected volume 120, received ${volume}.`);
 }
@@ -151,11 +211,22 @@ export async function test_face_thicken_hole_profile(partHistory) {
   assertClosedManifold(solid, 'thicken-hole');
 
   const faceNames = new Set(typeof solid.getFaceNames === 'function' ? solid.getFaceNames() : []);
-  assert(faceNames.has('THICK_RING_SOURCE_THICK_RING_SRC_PROFILE'), '[thicken-hole] Missing source face.');
-  assert(faceNames.has('THICK_RING_OFFSET_THICK_RING_SRC_PROFILE'), '[thicken-hole] Missing offset face.');
-  assert(faceNames.has('THICK_RING_RIM_L0_THICK_RING_SRC_PROFILE'), '[thicken-hole] Missing outer rim face.');
-  assert(faceNames.has('THICK_RING_RIM_L1_THICK_RING_SRC_PROFILE'), '[thicken-hole] Missing inner rim face.');
+  assert(faceNames.has('THICK_RING_SRC:PROFILE_START'), '[thicken-hole] Missing start face.');
+  assert(faceNames.has('THICK_RING_SRC:PROFILE_END'), '[thicken-hole] Missing end face.');
+  assert(faceNames.has('THICK_RING_SRC:PROFILE_SW'), '[thicken-hole] Missing outer side wall.');
+  assert(faceNames.has('THICK_RING_SRC:PROFILE_L1_SW'), '[thicken-hole] Missing inner side wall.');
+  assertBoundaryPairs(solid, 'thicken-hole', [
+    ['THICK_RING_SRC:PROFILE_START', 'THICK_RING_SRC:PROFILE_SW'],
+    ['THICK_RING_SRC:PROFILE_START', 'THICK_RING_SRC:PROFILE_L1_SW'],
+    ['THICK_RING_SRC:PROFILE_END', 'THICK_RING_SRC:PROFILE_SW'],
+    ['THICK_RING_SRC:PROFILE_END', 'THICK_RING_SRC:PROFILE_L1_SW'],
+  ]);
 
+  const diagnostics = solid?.__thickenDiagnostics || {};
+  assert(
+    String(diagnostics.classificationMethod || '').startsWith('propagated_face_ids'),
+    '[thicken-hole] Expected propagated face IDs.',
+  );
   const volume = typeof solid.volume === 'function' ? solid.volume() : NaN;
   assert(Math.abs(volume - 128) <= 1e-3, `[thicken-hole] Expected volume 128, received ${volume}.`);
 }
@@ -166,16 +237,42 @@ export async function test_face_thicken_curved_cylinder_side(partHistory) {
   assertClosedManifold(solid, 'thicken-curved');
 
   const faceNames = new Set(typeof solid.getFaceNames === 'function' ? solid.getFaceNames() : []);
-  assert(faceNames.has('THICK_CURVED_SOURCE_THICK_CURVED_SRC_S'), '[thicken-curved] Missing source face.');
-  assert(faceNames.has('THICK_CURVED_OFFSET_THICK_CURVED_SRC_S'), '[thicken-curved] Missing offset face.');
-  assert(faceNames.has('THICK_CURVED_RIM_L0_THICK_CURVED_SRC_S'), '[thicken-curved] Missing first rim loop.');
-  assert(faceNames.has('THICK_CURVED_RIM_L1_THICK_CURVED_SRC_S'), '[thicken-curved] Missing second rim loop.');
+  assert(faceNames.has('THICK_CURVED_SRC_S_START'), '[thicken-curved] Missing start face.');
+  assert(faceNames.has('THICK_CURVED_SRC_S_END'), '[thicken-curved] Missing end face.');
+  assert(faceNames.has('THICK_CURVED_SRC_S_SW'), '[thicken-curved] Missing first side wall loop.');
+  assert(faceNames.has('THICK_CURVED_SRC_S_L1_SW'), '[thicken-curved] Missing second side wall loop.');
 
-  const sourceRadius = averageFaceTriangleRadiusXZ(solid, 'THICK_CURVED_SOURCE_THICK_CURVED_SRC_S');
-  const offsetRadius = averageFaceTriangleRadiusXZ(solid, 'THICK_CURVED_OFFSET_THICK_CURVED_SRC_S');
+  const sourceRadius = averageFaceTriangleRadiusXZ(solid, 'THICK_CURVED_SRC_S_START');
+  const offsetRadius = averageFaceTriangleRadiusXZ(solid, 'THICK_CURVED_SRC_S_END');
   assert(
     offsetRadius > sourceRadius + 0.45,
     `[thicken-curved] Expected offset face to sit radially outside the source face, received ${sourceRadius} vs ${offsetRadius}.`,
+  );
+  const diagnostics = solid?.__thickenDiagnostics || {};
+  assert(
+    String(diagnostics.classificationMethod || '').startsWith('propagated_face_ids'),
+    '[thicken-curved] Expected propagated face IDs.',
+  );
+}
+
+export async function test_face_thicken_filleted_planar_face_keeps_clean_boundaries(partHistory) {
+  const face = await buildFilletedCubeTopFace(partHistory, 'THICK_FILLETED_SRC');
+  const solid = face.thicken(1.25, { featureId: 'THICK_FILLETED' });
+  assertClosedManifold(solid, 'thicken-filleted-planar');
+
+  const faceNames = new Set(typeof solid.getFaceNames === 'function' ? solid.getFaceNames() : []);
+  assert(faceNames.has('THICK_FILLETED_SRC_PZ_START'), '[thicken-filleted-planar] Missing start face.');
+  assert(faceNames.has('THICK_FILLETED_SRC_PZ_END'), '[thicken-filleted-planar] Missing end face.');
+  assert(faceNames.has('THICK_FILLETED_SRC_PZ_SW'), '[thicken-filleted-planar] Missing side wall.');
+  assertBoundaryPairs(solid, 'thicken-filleted-planar', [
+    ['THICK_FILLETED_SRC_PZ_START', 'THICK_FILLETED_SRC_PZ_SW'],
+    ['THICK_FILLETED_SRC_PZ_END', 'THICK_FILLETED_SRC_PZ_SW'],
+  ]);
+
+  const diagnostics = solid?.__thickenDiagnostics || {};
+  assert(
+    String(diagnostics.classificationMethod || '').startsWith('propagated_face_ids'),
+    '[thicken-filleted-planar] Expected propagated face IDs.',
   );
 }
 
@@ -187,6 +284,31 @@ export async function test_face_thicken_self_overlap_cylinder_side(partHistory) 
   const diagnostics = solid?.__thickenDiagnostics || null;
   assert(diagnostics && Number.isFinite(diagnostics.primitiveCount), '[thicken-self-overlap] Missing diagnostics.');
   assert((typeof solid.volume === 'function' ? solid.volume() : 0) > 0, '[thicken-self-overlap] Expected a positive-volume solid.');
+}
+
+export async function test_face_thicken_partial_torus_side_avoids_internal_voids(partHistory) {
+  const face = await buildTorusSideFace(partHistory, 'THICK_TORUS_SRC', 10, 4, 201, 32);
+  const solid = face.thicken(3, { featureId: 'THICK_TORUS' });
+  assertClosedManifold(solid, 'thicken-partial-torus');
+
+  const faceNames = new Set(typeof solid.getFaceNames === 'function' ? solid.getFaceNames() : []);
+  assert(faceNames.has('THICK_TORUS_SRC_Side_START'), '[thicken-partial-torus] Missing start face.');
+  assert(faceNames.has('THICK_TORUS_SRC_Side_END'), '[thicken-partial-torus] Missing end face.');
+  assert(faceNames.has('THICK_TORUS_SRC_Side_SW'), '[thicken-partial-torus] Missing first side wall loop.');
+  assert(faceNames.has('THICK_TORUS_SRC_Side_L1_SW'), '[thicken-partial-torus] Missing second side wall loop.');
+
+  const diagnostics = solid?.__thickenDiagnostics || {};
+  assert(
+    String(diagnostics.buildMethod || '').startsWith('stitched_shell'),
+    `[thicken-partial-torus] Expected stitched shell build path, received ${diagnostics.buildMethod || 'unknown'}.`,
+  );
+  assert(
+    String(diagnostics.classificationMethod || '').startsWith('propagated_face_ids'),
+    '[thicken-partial-torus] Expected propagated face IDs.',
+  );
+
+  const volume = typeof solid.volume === 'function' ? solid.volume() : NaN;
+  assert(Number.isFinite(volume) && volume > 1000, `[thicken-partial-torus] Expected positive torus-shell volume, received ${volume}.`);
 }
 
 export async function test_thicken_feature_serializes_and_replays_planar_profile(partHistory) {

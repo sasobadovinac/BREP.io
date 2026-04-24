@@ -186,7 +186,9 @@ import {
     afterRun_thicken_feature_multiple_faces_produce_multiple_solids,
     afterRun_thicken_feature_serializes_and_replays_planar_profile,
     test_face_thicken_curved_cylinder_side,
+    test_face_thicken_filleted_planar_face_keeps_clean_boundaries,
     test_face_thicken_hole_profile,
+    test_face_thicken_partial_torus_side_avoids_internal_voids,
     test_face_thicken_planar_profile,
     test_face_thicken_self_overlap_cylinder_side,
     test_thicken_feature_multiple_faces_produce_multiple_solids,
@@ -387,6 +389,8 @@ export const testFunctions = [
     { test: test_face_thicken_planar_profile, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     { test: test_face_thicken_hole_profile, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     { test: test_face_thicken_curved_cylinder_side, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_face_thicken_partial_torus_side_avoids_internal_voids, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
+    { test: test_face_thicken_filleted_planar_face_keeps_clean_boundaries, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     { test: test_face_thicken_self_overlap_cylinder_side, printArtifacts: false, exportFaces: false, exportSolids: false, resetHistory: true },
     {
         test: test_thicken_feature_serializes_and_replays_planar_profile,

@@ -404,28 +404,28 @@ function extractFaceSurface(face, options = {}) {
 function buildThickenClassificationState(labels, distance) {
   const groups = [
     {
-      label: labels.source,
-      kind: 'source',
+      label: labels.start,
+      kind: 'start',
       metadata: {
-        type: 'thicken_source',
+        type: 'start_cap',
         sourceFaceName: labels.sourceFaceName,
         distance,
       },
     },
     {
-      label: labels.offset,
-      kind: 'offset',
+      label: labels.end,
+      kind: 'end',
       metadata: {
-        type: 'thicken_offset',
+        type: 'end_cap',
         sourceFaceName: labels.sourceFaceName,
         distance,
       },
     },
-    ...labels.rims.map((label, loopIndex) => ({
+    ...labels.sidewalls.map((label, loopIndex) => ({
       label,
-      kind: 'rim',
+      kind: 'sidewall',
       metadata: {
-        type: 'thicken_rim',
+        type: 'sidewall',
         sourceFaceName: labels.sourceFaceName,
         loopIndex,
         distance,
@@ -507,14 +507,14 @@ function buildPrismManifold(p0, p1, p2, q0, q1, q2, distance, faceIDs = {}) {
     2, 0, 3,
     2, 3, 5,
   ]);
-  const sourceFaceID = Number(faceIDs?.sourceFaceID) >>> 0;
-  const offsetFaceID = Number(faceIDs?.offsetFaceID) >>> 0;
+  const startFaceID = Number(faceIDs?.startFaceID) >>> 0;
+  const endFaceID = Number(faceIDs?.endFaceID) >>> 0;
   const defaultInternalSideFaceID = Number.isFinite(Number(faceIDs?.internalSideFaceID))
     ? (Number(faceIDs.internalSideFaceID) >>> 0)
-    : (sourceFaceID || offsetFaceID || 1);
+    : (startFaceID || endFaceID || 1);
   const sideFaceIDs = Array.isArray(faceIDs?.sideFaceIDs) ? faceIDs.sideFaceIDs : [];
-  const capA = distance >= 0 ? (sourceFaceID || 1) : (offsetFaceID || 1);
-  const capB = distance >= 0 ? (offsetFaceID || capA) : (sourceFaceID || capA);
+  const capA = distance >= 0 ? (startFaceID || 1) : (endFaceID || 1);
+  const capB = distance >= 0 ? (endFaceID || capA) : (startFaceID || capA);
   const side0 = Number.isFinite(Number(sideFaceIDs[0]))
     ? (Number(sideFaceIDs[0]) >>> 0)
     : defaultInternalSideFaceID;
@@ -593,6 +593,124 @@ function unionManifoldsDeterministically(manifolds, batchSize = 24) {
   return current[0];
 }
 
+function stabilizeClassificationBySmoothComponents(mesh, classification, options = {}) {
+  const triVerts = Array.from(mesh?.triVerts ?? []);
+  const vertProperties = Array.from(mesh?.vertProperties ?? []);
+  const triCount = (triVerts.length / 3) | 0;
+  const triIDs = Array.from(classification?.triIDs ?? [], (rawID) => Number(rawID) >>> 0);
+  if (!triCount || triIDs.length !== triCount) return classification;
+
+  const smoothDotMin = Math.max(-1, Math.min(1, Number(options.smoothDotMin) || 0.7));
+  const edgeToTriangles = new Map();
+  const triangleNormals = new Array(triCount);
+  const triangleAreas = new Array(triCount).fill(0);
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const c = new THREE.Vector3();
+
+  for (let triIndex = 0; triIndex < triCount; triIndex++) {
+    const i0 = triVerts[(triIndex * 3) + 0] >>> 0;
+    const i1 = triVerts[(triIndex * 3) + 1] >>> 0;
+    const i2 = triVerts[(triIndex * 3) + 2] >>> 0;
+    a.set(
+      vertProperties[(i0 * 3) + 0] || 0,
+      vertProperties[(i0 * 3) + 1] || 0,
+      vertProperties[(i0 * 3) + 2] || 0,
+    );
+    b.set(
+      vertProperties[(i1 * 3) + 0] || 0,
+      vertProperties[(i1 * 3) + 1] || 0,
+      vertProperties[(i1 * 3) + 2] || 0,
+    );
+    c.set(
+      vertProperties[(i2 * 3) + 0] || 0,
+      vertProperties[(i2 * 3) + 1] || 0,
+      vertProperties[(i2 * 3) + 2] || 0,
+    );
+    const normal = triangleNormal(a, b, c);
+    const length = normal.length();
+    triangleAreas[triIndex] = length * 0.5;
+    if (length > TRI_EPS) normal.multiplyScalar(1 / length);
+    triangleNormals[triIndex] = normal;
+
+    for (const [u, v] of [[i0, i1], [i1, i2], [i2, i0]]) {
+      const key = edgeKey(u, v);
+      let list = edgeToTriangles.get(key);
+      if (!list) {
+        list = [];
+        edgeToTriangles.set(key, list);
+      }
+      list.push(triIndex);
+    }
+  }
+
+  const adjacency = new Array(triCount).fill(null).map(() => []);
+  for (const uses of edgeToTriangles.values()) {
+    if (!Array.isArray(uses) || uses.length !== 2) continue;
+    const [aTri, bTri] = uses;
+    adjacency[aTri].push(bTri);
+    adjacency[bTri].push(aTri);
+  }
+
+  const visited = new Array(triCount).fill(false);
+  const stabilizedIDs = triIDs.slice();
+  let changed = false;
+
+  for (let seed = 0; seed < triCount; seed++) {
+    if (visited[seed]) continue;
+    const component = [];
+    const stack = [seed];
+    visited[seed] = true;
+    while (stack.length) {
+      const triIndex = stack.pop();
+      component.push(triIndex);
+      const baseNormal = triangleNormals[triIndex];
+      for (const neighbor of adjacency[triIndex]) {
+        if (visited[neighbor]) continue;
+        const neighborNormal = triangleNormals[neighbor];
+        const dot = baseNormal.lengthSq() > TRI_EPS && neighborNormal.lengthSq() > TRI_EPS
+          ? baseNormal.dot(neighborNormal)
+          : 1;
+        if (dot < smoothDotMin) continue;
+        visited[neighbor] = true;
+        stack.push(neighbor);
+      }
+    }
+
+    if (component.length <= 1) continue;
+    const weights = new Map();
+    for (const triIndex of component) {
+      const id = stabilizedIDs[triIndex];
+      const weight = triangleAreas[triIndex] > TRI_EPS ? triangleAreas[triIndex] : 1;
+      weights.set(id, (weights.get(id) || 0) + weight);
+    }
+    if (weights.size <= 1) continue;
+
+    let bestID = stabilizedIDs[component[0]];
+    let bestWeight = -Infinity;
+    for (const [id, weight] of weights.entries()) {
+      if (weight > bestWeight || (weight === bestWeight && id < bestID)) {
+        bestID = id;
+        bestWeight = weight;
+      }
+    }
+    for (const triIndex of component) {
+      if (stabilizedIDs[triIndex] === bestID) continue;
+      stabilizedIDs[triIndex] = bestID;
+      changed = true;
+    }
+  }
+
+  if (!changed) return classification;
+  return {
+    ...classification,
+    triIDs: stabilizedIDs,
+    method: classification?.method
+      ? `${classification.method}_smooth_components`
+      : 'smooth_components',
+  };
+}
+
 function classifyUnionMesh(mesh, surface, distance, classificationState) {
   const triVerts = Array.from(mesh?.triVerts ?? []);
   const vertProperties = Array.from(mesh?.vertProperties ?? []);
@@ -600,9 +718,9 @@ function classifyUnionMesh(mesh, surface, distance, classificationState) {
   const distanceScale = Math.max(Math.abs(Number(distance) || 0) * 0.05, surface.scale * 1e-5, 1e-6);
   const labels = classificationState?.labels || {};
 
-  const sourceTriangles = [];
-  const offsetTriangles = [];
-  const rimLoopTriangles = surface.loops.map(() => []);
+  const startTriangles = [];
+  const endTriangles = [];
+  const sidewallLoopTriangles = surface.loops.map(() => []);
 
   for (let triIndex = 0; triIndex < surface.triangles.length; triIndex++) {
     const [a, b, c] = surface.triangles[triIndex];
@@ -614,11 +732,11 @@ function classifyUnionMesh(mesh, surface, distance, classificationState) {
     const q2 = p2.clone().add(surface.vertexNormals[c].clone().multiplyScalar(distance));
 
     if (distance >= 0) {
-      sourceTriangles.push({ a: p0, b: p2, c: p1 });
-      offsetTriangles.push({ a: q0, b: q1, c: q2 });
+      startTriangles.push({ a: p0, b: p2, c: p1 });
+      endTriangles.push({ a: q0, b: q1, c: q2 });
     } else {
-      sourceTriangles.push({ a: p0, b: p1, c: p2 });
-      offsetTriangles.push({ a: q0, b: q2, c: q1 });
+      startTriangles.push({ a: p0, b: p1, c: p2 });
+      endTriangles.push({ a: q0, b: q2, c: q1 });
     }
 
     for (const [u, v] of [[a, b], [b, c], [c, a]]) {
@@ -628,52 +746,52 @@ function classifyUnionMesh(mesh, surface, distance, classificationState) {
       const pv = surface.vertices[v];
       const qu = pu.clone().add(surface.vertexNormals[u].clone().multiplyScalar(distance));
       const qv = pv.clone().add(surface.vertexNormals[v].clone().multiplyScalar(distance));
-      rimLoopTriangles[loopIndex].push({ a: pu, b: pv, c: qv });
-      rimLoopTriangles[loopIndex].push({ a: pu, b: qv, c: qu });
+      sidewallLoopTriangles[loopIndex].push({ a: pu, b: pv, c: qv });
+      sidewallLoopTriangles[loopIndex].push({ a: pu, b: qv, c: qu });
     }
   }
 
-  const sourceGroup = classificationState?.groups?.[0] || {
-    label: labels.source,
-    kind: 'source',
+  const startGroup = classificationState?.groups?.[0] || {
+    label: labels.start,
+    kind: 'start',
     metadata: {
-      type: 'thicken_source',
+      type: 'start_cap',
       sourceFaceName: labels.sourceFaceName,
       distance,
     },
   };
-  const offsetGroup = classificationState?.groups?.[1] || {
-    label: labels.offset,
-    kind: 'offset',
+  const endGroup = classificationState?.groups?.[1] || {
+    label: labels.end,
+    kind: 'end',
     metadata: {
-      type: 'thicken_offset',
+      type: 'end_cap',
       sourceFaceName: labels.sourceFaceName,
       distance,
     },
   };
-  const rimGroups = Array.isArray(classificationState?.groups)
+  const sidewallGroups = Array.isArray(classificationState?.groups)
     ? classificationState.groups.slice(2)
     : [];
 
   const referenceGroups = [
-    buildReferenceGroup(sourceGroup.label, sourceTriangles, sourceGroup.kind || 'source', sourceGroup.metadata || {}),
-    buildReferenceGroup(offsetGroup.label, offsetTriangles, offsetGroup.kind || 'offset', offsetGroup.metadata || {}),
-    ...rimLoopTriangles.map((triangles, loopIndex) => {
-      const rimGroup = rimGroups[loopIndex] || {
-        label: labels.rims?.[loopIndex],
-        kind: 'rim',
+    buildReferenceGroup(startGroup.label, startTriangles, startGroup.kind || 'start', startGroup.metadata || {}),
+    buildReferenceGroup(endGroup.label, endTriangles, endGroup.kind || 'end', endGroup.metadata || {}),
+    ...sidewallLoopTriangles.map((triangles, loopIndex) => {
+      const sidewallGroup = sidewallGroups[loopIndex] || {
+        label: labels.sidewalls?.[loopIndex],
+        kind: 'sidewall',
         metadata: {
-          type: 'thicken_rim',
+          type: 'sidewall',
           sourceFaceName: labels.sourceFaceName,
           loopIndex,
           distance,
         },
       };
       return buildReferenceGroup(
-        rimGroup.label,
+        sidewallGroup.label,
         triangles,
-        rimGroup.kind || 'rim',
-        rimGroup.metadata || {},
+        sidewallGroup.kind || 'sidewall',
+        sidewallGroup.metadata || {},
       );
     }),
   ].filter((group) => Array.isArray(group?.triangles) && group.triangles.length);
@@ -775,6 +893,131 @@ function buildSolidFromUnionMesh(mesh, classification, name) {
   return solid;
 }
 
+function buildRawClassification(classificationState, triIDs, method = 'raw_face_ids') {
+  return {
+    triIDs: Array.from(triIDs || [], (rawID) => Number(rawID) >>> 0),
+    faceNameToID: classificationState?.faceNameToID instanceof Map
+      ? classificationState.faceNameToID
+      : new Map(),
+    idToFaceName: classificationState?.idToFaceName instanceof Map
+      ? classificationState.idToFaceName
+      : new Map(),
+    faceMetadataJson: Array.from(classificationState?.faceMetadataJson || []),
+    groups: Array.isArray(classificationState?.groups) ? classificationState.groups : [],
+    method,
+  };
+}
+
+function buildStitchedThickenMesh(surface, distance, classificationState) {
+  const vertexCount = Array.isArray(surface?.vertices) ? surface.vertices.length : 0;
+  if (!vertexCount) return null;
+
+  const vertProperties = new Float32Array(vertexCount * 2 * 3);
+  for (let i = 0; i < vertexCount; i++) {
+    const p = surface.vertices[i];
+    const q = p.clone().add(surface.vertexNormals[i].clone().multiplyScalar(distance));
+    vertProperties[(i * 3) + 0] = p.x;
+    vertProperties[(i * 3) + 1] = p.y;
+    vertProperties[(i * 3) + 2] = p.z;
+    const qi = vertexCount + i;
+    vertProperties[(qi * 3) + 0] = q.x;
+    vertProperties[(qi * 3) + 1] = q.y;
+    vertProperties[(qi * 3) + 2] = q.z;
+  }
+
+  const startFaceID = Number(classificationState?.faceNameToID?.get?.(classificationState?.labels?.start)) >>> 0;
+  const endFaceID = Number(classificationState?.faceNameToID?.get?.(classificationState?.labels?.end)) >>> 0;
+  const triVerts = [];
+  const triIDs = [];
+  const addTriangle = (i0, i1, i2, faceID) => {
+    if (i0 === i1 || i1 === i2 || i2 === i0) return;
+    const a = new THREE.Vector3(
+      vertProperties[(i0 * 3) + 0],
+      vertProperties[(i0 * 3) + 1],
+      vertProperties[(i0 * 3) + 2],
+    );
+    const b = new THREE.Vector3(
+      vertProperties[(i1 * 3) + 0],
+      vertProperties[(i1 * 3) + 1],
+      vertProperties[(i1 * 3) + 2],
+    );
+    const c = new THREE.Vector3(
+      vertProperties[(i2 * 3) + 0],
+      vertProperties[(i2 * 3) + 1],
+      vertProperties[(i2 * 3) + 2],
+    );
+    if (!(triangleArea(a, b, c) > TRI_EPS)) return;
+    triVerts.push(i0 >>> 0, i1 >>> 0, i2 >>> 0);
+    triIDs.push(Number(faceID) >>> 0);
+  };
+
+  for (const tri of surface.triangles || []) {
+    const [a, b, c] = tri;
+    if (distance >= 0) {
+      addTriangle(a, c, b, startFaceID);
+      addTriangle(vertexCount + a, vertexCount + b, vertexCount + c, endFaceID);
+    } else {
+      addTriangle(a, b, c, startFaceID);
+      addTriangle(vertexCount + a, vertexCount + c, vertexCount + b, endFaceID);
+    }
+  }
+
+  for (let loopIndex = 0; loopIndex < (surface.loops?.length || 0); loopIndex++) {
+    const loop = surface.loops[loopIndex];
+    const sideLabel = classificationState?.labels?.sidewalls?.[loopIndex];
+    const sideFaceID = Number(classificationState?.faceNameToID?.get?.(sideLabel)) >>> 0;
+    for (const edge of loop?.edges || []) {
+      const u = edge.start >>> 0;
+      const v = edge.end >>> 0;
+      const qu = vertexCount + u;
+      const qv = vertexCount + v;
+      if (distance >= 0) {
+        addTriangle(u, v, qv, sideFaceID);
+        addTriangle(u, qv, qu, sideFaceID);
+      } else {
+        addTriangle(qu, qv, v, sideFaceID);
+        addTriangle(qu, v, u, sideFaceID);
+      }
+    }
+  }
+
+  return {
+    numProp: 3,
+    vertProperties,
+    triVerts: Uint32Array.from(triVerts),
+    faceID: Uint32Array.from(triIDs),
+  };
+}
+
+function buildStitchedShellSolid(surface, distance, classificationState, solidName) {
+  const rawMesh = buildStitchedThickenMesh(surface, distance, classificationState);
+  if (!rawMesh) return null;
+  const rawClassification = buildRawClassification(classificationState, rawMesh.faceID, 'stitched_shell');
+  return buildSolidFromUnionMesh(rawMesh, rawClassification, solidName);
+}
+
+function buildClassificationStateFromSolid(solid, fallbackState = null) {
+  const faceNameToID = solid?._faceNameToID instanceof Map
+    ? solid._faceNameToID
+    : (fallbackState?.faceNameToID instanceof Map ? fallbackState.faceNameToID : new Map());
+  const idToFaceName = solid?._idToFaceName instanceof Map
+    ? solid._idToFaceName
+    : (fallbackState?.idToFaceName instanceof Map ? fallbackState.idToFaceName : new Map());
+  const faceMetadataJson = solid?._faceMetadata instanceof Map
+    ? Array.from(solid._faceMetadata.entries(), ([faceName, metadata]) => [
+      String(faceName || ''),
+      JSON.stringify(metadata || {}),
+    ])
+    : Array.from(fallbackState?.faceMetadataJson || []);
+  return {
+    labels: fallbackState?.labels || {},
+    groups: Array.isArray(fallbackState?.groups) ? fallbackState.groups : [],
+    faceNameToID,
+    idToFaceName,
+    faceMetadataJson,
+  };
+}
+
 export function thickenFaceToSolid(face, distance, options = {}) {
   const dist = Number(distance);
   if (!Number.isFinite(dist) || Math.abs(dist) <= EPS) {
@@ -784,8 +1027,127 @@ export function thickenFaceToSolid(face, distance, options = {}) {
   const surface = extractFaceSurface(face, options);
   const featureId = sanitizeToken(options.featureId || options.name || face?.name || 'THICKEN', 'THICKEN');
   const sourceFaceName = String(face?.userData?.faceName || face?.name || featureId).trim() || featureId;
-  const sourceToken = sanitizeToken(sourceFaceName, 'FACE');
   const loops = Array.isArray(surface.loops) ? surface.loops : [];
+  const labels = {
+    sourceFaceName,
+    start: `${sourceFaceName}_START`,
+    end: `${sourceFaceName}_END`,
+    sidewalls: loops.map((_, loopIndex) => (loopIndex === 0
+      ? `${sourceFaceName}_SW`
+      : `${sourceFaceName}_L${loopIndex}_SW`)),
+  };
+  const classificationState = buildThickenClassificationState(labels, dist);
+  const solidName = String(options.name || featureId).trim() || featureId;
+  const manifoldWeldEpsilon = Math.max(
+    Number(options.manifoldWeldTolerance) || 0,
+    Math.max(surface.weldTolerance || 0, surface.scale * 1e-7, 1e-6),
+  );
+
+  let staged = null;
+  let stageMesh = null;
+  try {
+    staged = buildStitchedShellSolid(surface, dist, classificationState, solidName);
+    if (staged) {
+      try { staged.setEpsilon?.(manifoldWeldEpsilon); } catch { /* ignore */ }
+      let cleanupMethod = 'stitched_shell';
+      let repaired = false;
+      try {
+        staged._manifoldize?.();
+      } catch {
+        try {
+          const splitCount = Number(staged.splitSelfIntersectingTriangles?.() || 0);
+          const removedDegenerate = Number(staged.removeDegenerateTriangles?.() || 0);
+          try { staged.setEpsilon?.(manifoldWeldEpsilon); } catch { /* ignore */ }
+          staged.removeInternalTriangles?.({ fallback: 'winding' });
+          cleanupMethod = 'stitched_shell_split_cleanup';
+          repaired = (splitCount + removedDegenerate) > 0;
+        } catch {
+          cleanupMethod = 'stitched_shell_failed';
+        }
+        try { staged._manifoldize?.(); } catch { /* ignore */ }
+      }
+
+      const topology = analyzeMeshTopology(staged);
+      if (
+        topology.boundaryEdgeCount === 0
+        && topology.nonManifoldEdgeCount === 0
+        && (typeof staged._isCoherentlyOrientedManifold !== 'function' || staged._isCoherentlyOrientedManifold() === true)
+      ) {
+        try {
+          stageMesh = staged._manifoldize?.().getMesh?.() || null;
+        } catch {
+          stageMesh = null;
+        }
+        if (stageMesh) {
+          const stageClassificationState = buildClassificationStateFromSolid(staged, classificationState);
+          const propagatedClassification = buildClassificationFromPropagatedFaceIDs(stageMesh, stageClassificationState);
+          const initialClassification = propagatedClassification
+            || classifyUnionMesh(stageMesh, surface, dist, stageClassificationState);
+          const classification = stabilizeClassificationBySmoothComponents(stageMesh, initialClassification);
+          const result = buildSolidFromUnionMesh(stageMesh, classification, solidName);
+
+          let sourceMetadata = null;
+          try {
+            sourceMetadata = typeof face?.getMetadata === 'function' ? (face.getMetadata() || null) : null;
+          } catch {
+            sourceMetadata = null;
+          }
+          try {
+            if (sourceMetadata && typeof result.setFaceMetadata === 'function') {
+              result.setFaceMetadata(labels.start, {
+                ...sourceMetadata,
+                type: classification.groups.find((group) => group.label === labels.start)?.metadata?.type || 'start_cap',
+                sourceFaceName,
+                sourceFeatureId: face?.owningFeatureID ?? face?.parentSolid?.owningFeatureID ?? sourceMetadata?.sourceFeatureId ?? null,
+              });
+              result.setFaceMetadata(labels.end, {
+                ...sourceMetadata,
+                type: classification.groups.find((group) => group.label === labels.end)?.metadata?.type || 'end_cap',
+                sourceFaceName,
+                sourceFeatureId: face?.owningFeatureID ?? face?.parentSolid?.owningFeatureID ?? sourceMetadata?.sourceFeatureId ?? null,
+              });
+            }
+          } catch { /* ignore metadata propagation errors */ }
+
+          result.__thickenMethod = repaired
+            ? cleanupMethod
+            : 'stitched_shell_manifold';
+          result.__thickenClassificationMethod = classification.method || 'unknown';
+          result.__thickenDiagnostics = {
+            primitiveCount: 1,
+            hullFallbackCount: 0,
+            boundaryLoopCount: loops.length,
+            sourceFaceName,
+            distance: dist,
+            classificationMethod: classification.method || 'unknown',
+            buildMethod: result.__thickenMethod,
+            weldEpsilon: manifoldWeldEpsilon,
+          };
+          result.userData = {
+            ...(result.userData || {}),
+            thicken: {
+              sourceFaceName,
+              distance: dist,
+              primitiveCount: 1,
+              hullFallbackCount: 0,
+              boundaryLoopCount: loops.length,
+              classificationMethod: classification.method || 'unknown',
+              buildMethod: result.__thickenMethod,
+              weldEpsilon: manifoldWeldEpsilon,
+            },
+          };
+          return result;
+        }
+      }
+    }
+  } finally {
+    try { stageMesh?.delete?.(); } catch { /* ignore */ }
+    try { staged?.free?.(); } catch { /* ignore */ }
+  }
+
+  const startFaceID = classificationState.faceNameToID.get(labels.start);
+  const endFaceID = classificationState.faceNameToID.get(labels.end);
+  const defaultInternalSideFaceID = startFaceID || endFaceID || 1;
 
   const prismManifolds = [];
   let hullFallbackCount = 0;
@@ -806,7 +1168,31 @@ export function thickenFaceToSolid(face, distance, options = {}) {
     }
 
     try {
-      prismManifolds.push(buildPrismManifold(p0, p1, p2, q0, q1, q2, dist));
+      const sideFaceIDs = [
+        surface.boundaryEdgeToLoop.get(edgeKey(a, b)),
+        surface.boundaryEdgeToLoop.get(edgeKey(b, c)),
+        surface.boundaryEdgeToLoop.get(edgeKey(c, a)),
+      ].map((loopIndex) => {
+        if (loopIndex == null) return defaultInternalSideFaceID;
+        const label = labels.sidewalls[loopIndex];
+        const id = classificationState.faceNameToID.get(label);
+        return Number.isFinite(Number(id)) ? (Number(id) >>> 0) : defaultInternalSideFaceID;
+      });
+      prismManifolds.push(buildPrismManifold(
+        p0,
+        p1,
+        p2,
+        q0,
+        q1,
+        q2,
+        dist,
+        {
+          startFaceID,
+          endFaceID,
+          sideFaceIDs,
+          internalSideFaceID: defaultInternalSideFaceID,
+        },
+      ));
     } catch {
       prismManifolds.push(buildHullFallback(p0, p1, p2, q0, q1, q2));
       hullFallbackCount += 1;
@@ -819,71 +1205,77 @@ export function thickenFaceToSolid(face, distance, options = {}) {
   let unioned = null;
   try {
     unioned = unionManifoldsDeterministically(prismManifolds);
-    const mesh = unioned.getMesh();
-    const labels = {
-      sourceFaceName,
-      source: `${featureId}_SOURCE_${sourceToken}`,
-      offset: `${featureId}_OFFSET_${sourceToken}`,
-      rims: loops.map((_, loopIndex) => `${featureId}_RIM_L${loopIndex}_${sourceToken}`),
-    };
-    const classification = classifyUnionMesh(mesh, surface, dist, labels);
-    const solidName = String(options.name || featureId).trim() || featureId;
-    const result = buildSolidFromUnionMesh(mesh, classification, solidName);
-    const topology = analyzeMeshTopology(result);
-    if (topology.boundaryEdgeCount || topology.nonManifoldEdgeCount) {
-      throw new Error(
-        `Face.thicken() produced invalid topology: `
-        + `boundaries=${topology.boundaryEdgeCount}, nonManifold=${topology.nonManifoldEdgeCount}.`,
-      );
-    }
-    if (typeof result._isCoherentlyOrientedManifold === 'function' && result._isCoherentlyOrientedManifold() !== true) {
-      throw new Error('Face.thicken() produced a non-coherently-oriented manifold result.');
-    }
-
-    let sourceMetadata = null;
+    let mesh = null;
     try {
-      sourceMetadata = typeof face?.getMetadata === 'function' ? (face.getMetadata() || null) : null;
-    } catch {
-      sourceMetadata = null;
-    }
-    try {
-      if (sourceMetadata && typeof result.setFaceMetadata === 'function') {
-        result.setFaceMetadata(labels.source, {
-          ...sourceMetadata,
-          type: classification.groups.find((group) => group.label === labels.source)?.metadata?.type || 'thicken_source',
-          sourceFaceName,
-          sourceFeatureId: face?.owningFeatureID ?? face?.parentSolid?.owningFeatureID ?? sourceMetadata?.sourceFeatureId ?? null,
-        });
-        result.setFaceMetadata(labels.offset, {
-          ...sourceMetadata,
-          type: classification.groups.find((group) => group.label === labels.offset)?.metadata?.type || 'thicken_offset',
-          sourceFaceName,
-          sourceFeatureId: face?.owningFeatureID ?? face?.parentSolid?.owningFeatureID ?? sourceMetadata?.sourceFeatureId ?? null,
-        });
+      mesh = unioned.getMesh();
+      const propagatedClassification = hullFallbackCount === 0
+        ? buildClassificationFromPropagatedFaceIDs(mesh, classificationState)
+        : null;
+      const initialClassification = propagatedClassification
+        || classifyUnionMesh(mesh, surface, dist, classificationState);
+      const classification = stabilizeClassificationBySmoothComponents(mesh, initialClassification);
+      const result = buildSolidFromUnionMesh(mesh, classification, solidName);
+      const topology = analyzeMeshTopology(result);
+      if (topology.boundaryEdgeCount || topology.nonManifoldEdgeCount) {
+        throw new Error(
+          `Face.thicken() produced invalid topology: `
+          + `boundaries=${topology.boundaryEdgeCount}, nonManifold=${topology.nonManifoldEdgeCount}.`,
+        );
       }
-    } catch { /* ignore metadata propagation errors */ }
+      if (typeof result._isCoherentlyOrientedManifold === 'function' && result._isCoherentlyOrientedManifold() !== true) {
+        throw new Error('Face.thicken() produced a non-coherently-oriented manifold result.');
+      }
 
-    result.__thickenMethod = hullFallbackCount > 0
-      ? 'triangle_prism_union_with_hull_fallback'
-      : 'triangle_prism_union';
-    result.__thickenDiagnostics = {
-      primitiveCount: prismManifolds.length,
-      hullFallbackCount,
-      boundaryLoopCount: loops.length,
-      sourceFaceName,
-      distance: dist,
-    };
-    result.userData = {
-      ...(result.userData || {}),
-      thicken: {
-        sourceFaceName,
-        distance: dist,
+      let sourceMetadata = null;
+      try {
+        sourceMetadata = typeof face?.getMetadata === 'function' ? (face.getMetadata() || null) : null;
+      } catch {
+        sourceMetadata = null;
+      }
+      try {
+        if (sourceMetadata && typeof result.setFaceMetadata === 'function') {
+          result.setFaceMetadata(labels.start, {
+            ...sourceMetadata,
+            type: classification.groups.find((group) => group.label === labels.start)?.metadata?.type || 'start_cap',
+            sourceFaceName,
+            sourceFeatureId: face?.owningFeatureID ?? face?.parentSolid?.owningFeatureID ?? sourceMetadata?.sourceFeatureId ?? null,
+          });
+          result.setFaceMetadata(labels.end, {
+            ...sourceMetadata,
+            type: classification.groups.find((group) => group.label === labels.end)?.metadata?.type || 'end_cap',
+            sourceFaceName,
+            sourceFeatureId: face?.owningFeatureID ?? face?.parentSolid?.owningFeatureID ?? sourceMetadata?.sourceFeatureId ?? null,
+          });
+        }
+      } catch { /* ignore metadata propagation errors */ }
+
+      result.__thickenMethod = hullFallbackCount > 0
+        ? 'triangle_prism_union_with_hull_fallback'
+        : 'triangle_prism_union';
+      result.__thickenClassificationMethod = classification.method || 'unknown';
+      result.__thickenDiagnostics = {
         primitiveCount: prismManifolds.length,
         hullFallbackCount,
         boundaryLoopCount: loops.length,
-      },
-    };
-    return result;
+        sourceFaceName,
+        distance: dist,
+        classificationMethod: classification.method || 'unknown',
+      };
+      result.userData = {
+        ...(result.userData || {}),
+        thicken: {
+          sourceFaceName,
+          distance: dist,
+          primitiveCount: prismManifolds.length,
+          hullFallbackCount,
+          boundaryLoopCount: loops.length,
+          classificationMethod: classification.method || 'unknown',
+        },
+      };
+      return result;
+    } finally {
+      try { mesh?.delete?.(); } catch { /* ignore */ }
+    }
   } finally {
     for (const primitive of prismManifolds) {
       if (!primitive || primitive === unioned) continue;
