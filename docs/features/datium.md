@@ -4,11 +4,12 @@ Status: Implemented
 
 ![Datum feature dialog](Datium_dialog.png)
 
-Datium creates an orthogonal datum triad (XY/XZ/YZ planes) for sketching and feature references.
+Datium creates a reference triad of orthogonal `XY`, `XZ`, and `YZ` planes for sketching and other feature inputs.
 
 ## Inputs
-- `transform` – Position, rotation, and scale applied to the datum group.
+- `transform` - position, rotation, and scale applied to the datum group.
 
 ## Behaviour
-- Emits a `THREE.Group` named after the feature ID containing three selectable planes tagged as `PLANE`.
-- Planes are oriented like the Plane feature and respond to the supplied transform, making it easy to anchor sketches or construction geometry away from the origin.
+- Emits a `THREE.Group` named after the feature ID with three selectable plane meshes: `XY`, `XZ`, and `YZ`.
+- The planes use the `PLANE` selection filter, so sketches and other downstream features can target them directly.
+- The triad starts at the world origin, then applies the supplied transform.

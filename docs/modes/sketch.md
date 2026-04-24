@@ -1,15 +1,6 @@
 # Sketch Mode
 
-For complete documentation on Sketch functionality, workflow, and technical details, see:
-
-**[→ Sketch Feature Documentation](../features/sketch.md)**
-
-This page covers the complete Sketch feature including:
-- Overview and workflow
-- Input parameters and behavior  
-- 2D sketching tools and constraints
-- Integration with other features (Extrude, Revolve, Loft, Sweep)
-- Tool icon legend (Unicode toolbar buttons)
+Sketch Mode is the dedicated editing environment for the [Sketch feature](../features/sketch.md). The feature page is the canonical reference for tools, constraints, parameters, and downstream usage.
 
 ## Recent Sketcher Additions
 - **Trim tool** for line/arc/circle/Bezier editing with local intersection-based trimming

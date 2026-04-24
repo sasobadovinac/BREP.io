@@ -1,6 +1,6 @@
 # Application Subsystems Docs
 
-Use this section when you are working on a specific subsystem rather than the core kernel or embed APIs.
+Use this section for application subsystems outside the core kernel and embed APIs.
 
 ## Assembly Constraints
 

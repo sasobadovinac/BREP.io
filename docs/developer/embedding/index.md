@@ -1,6 +1,6 @@
 # Embedding and Integration Docs
 
-Use this section when you are embedding the kernel, the full CAD app, or the 2D sketcher into another application.
+Use this section when embedding the kernel, the full CAD app, or the 2D sketcher into another application.
 
 ## Start Here
 

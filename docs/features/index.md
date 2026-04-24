@@ -50,4 +50,4 @@ Reference docs for the built-in modeling features.
 - [Transform](transform.md)
 - [Tube](tube.md)
 
-`Datum` is kept as a legacy alias page; use `Datium` for the current feature name.
+`Datum` remains as a legacy alias page; `Datium` is the canonical feature doc.

@@ -1,6 +1,6 @@
 # Application Architecture Docs
 
-Use this section when you are changing how the application is structured, how history is replayed, how expressions work, or how the UI and feature system are wired together.
+Use this section for application structure, history replay, expressions, and UI wiring.
 
 ## Core Architecture
 

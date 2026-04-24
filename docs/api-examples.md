@@ -1,7 +1,7 @@
 # API Examples
 
 Standalone browser demos for the BREP kernel and Sketcher2D APIs.
-This page links every live `.html` demo under `/apiExamples/`, including the examples index page.
+This page links the live `.html` demos under `/apiExamples/`.
 
 ## Example Hub
 - Demo: [https://BREP.io/apiExamples/index.html](https://BREP.io/apiExamples/index.html)
@@ -23,23 +23,23 @@ This page links every live `.html` demo under `/apiExamples/`, including the exa
 - Demo: [https://BREP.io/apiExamples/BREP_Export.html](https://BREP.io/apiExamples/BREP_Export.html)
 - Source: [apiExamples/BREP_Export.html](https://github.com/mmiscool/BREP/blob/master/apiExamples/BREP_Export.html)
 
-## Embeded 2D Sketcher
+## Embedded 2D Sketcher
 - Demo: [https://BREP.io/apiExamples/Embeded_2D_Sketcher.html](https://BREP.io/apiExamples/Embeded_2D_Sketcher.html)
 - Source: [apiExamples/Embeded_2D_Sketcher.html](https://github.com/mmiscool/BREP/blob/master/apiExamples/Embeded_2D_Sketcher.html)
 - Includes host-side exports for SVG, DXF, and sampled per-curve 3D polylines.
 
-## Embeded CAD
+## Embedded CAD
 - Demo: [https://BREP.io/apiExamples/Embeded_CAD.html](https://BREP.io/apiExamples/Embeded_CAD.html)
 - Source: [apiExamples/Embeded_CAD.html](https://github.com/mmiscool/BREP/blob/master/apiExamples/Embeded_CAD.html)
 - Mounts the full CAD app with the iframe-based `CadEmbed` API and shows host-side history/model controls.
 
-## Embeded CAD (CDN)
+## Embedded CAD (CDN)
 - Demo: [https://BREP.io/apiExamples/Embeded_CAD_CDN.html](https://BREP.io/apiExamples/Embeded_CAD_CDN.html)
 - Source: [apiExamples/Embeded_CAD_CDN.html](https://github.com/mmiscool/BREP/blob/master/apiExamples/Embeded_CAD_CDN.html)
 - Uses direct jsDelivr import:
   `import { BREP, CadEmbed } from "https://cdn.jsdelivr.net/npm/brep-io-kernel@latest/dist-kernel/brep-kernel.js";`
 
-## Embeded CAD Integration Test
+## Embedded CAD Integration Test
 - Demo: [https://BREP.io/apiExamples/Embeded_CAD_Integration_Test.html](https://BREP.io/apiExamples/Embeded_CAD_Integration_Test.html)
 - Source: [apiExamples/Embeded_CAD_Integration_Test.html](https://github.com/mmiscool/BREP/blob/master/apiExamples/Embeded_CAD_Integration_Test.html)
 - Runs in-browser assertions across the `CadEmbed` lifecycle and runtime methods.

@@ -1,6 +1,6 @@
 # Kernel and Geometry Docs
 
-Use this section when you are working on the BREP kernel, geometry data model, class APIs, topology tracking, or export behavior.
+Use this section for the BREP kernel, geometry data model, class APIs, topology tracking, and export behavior.
 
 ## Start Here
 
@@ -35,6 +35,6 @@ Use this section when you are working on the BREP kernel, geometry data model, c
 
 ## Suggested Reading Order
 
-1. Read [BREP Kernel Reference](../../brep-kernel.md) for structure.
-2. Open [BREP Class API Reference](../../api/index.md) for exact class behavior.
-3. Use the topic pages above for deeper geometry-specific behavior.
+1. Read [BREP Kernel Reference](../../brep-kernel.md) for structure
+2. Open [BREP Class API Reference](../../api/index.md) for exact class behavior
+3. Use the topic pages above for deeper geometry-specific behavior
